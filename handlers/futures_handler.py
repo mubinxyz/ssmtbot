@@ -19,8 +19,8 @@ GROUP_ID_SET = {
 
 FALLBACK_SYMBOLS = {
     "spx_nq_ym": ["SPX", "NQ", "YM"],
-    "es_nq_dow": ["ES", "NQ", "DOW"],
-    "spx_dow_nq": ["SPX", "DOW", "NQ"],
+    # "es_nq_dow": ["ES", "NQ", "DOW"],
+    # "spx_dow_nq": ["SPX", "DOW", "NQ"],
 }
 
 TIMEFRAMES = [5, 15, 60, 240]

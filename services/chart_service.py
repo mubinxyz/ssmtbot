@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 SOURCE_TZ = dateutil_tz.tzoffset(None, 3 * 3600)   # provider = UTC+3
 LOCAL_TZ_NAME = "Asia/Tehran"
 LOCAL_OFFSET_MINUTES = 210                         # fallback +3:30
-NEAR_TOLERANCE_HOURS = 3                           # tolerance used to decide "nearby" candle
+NEAR_TOLERANCE_HOURS = 3                           # fallback tolerance used to decide "nearby" candle
 QUARTER_COLORS = ["C2", "C3", "C4", "C5"]
 TRUEOPEN_COLOR = "C6"
 TRUEOPEN_STYLE = "--"
@@ -31,13 +31,20 @@ TRUEOPEN_STYLE = "--"
 def _parse_datetimes_to_utc(series: pd.Series, source_tz=SOURCE_TZ) -> pd.Series:
     """
     Deterministic parsing:
-      - epoch numbers -> parse as naive datetimes then localize to source_tz (UTC+3) then convert to UTC
+      - epoch numbers -> detect seconds vs milliseconds then localize to source_tz then convert to UTC
       - naive datetimes -> localize to source_tz then convert to UTC
       - tz-aware datetimes -> convert to UTC
     Returns tz-aware UTC Series.
     """
     if pd.api.types.is_integer_dtype(series) or pd.api.types.is_float_dtype(series):
-        s = pd.to_datetime(series, unit="s", errors="coerce")
+        # detect seconds vs milliseconds
+        try:
+            non_na = series.dropna()
+            maxv = int(non_na.max()) if not non_na.empty else 0
+        except Exception:
+            maxv = 0
+        unit = "ms" if maxv > 10**12 else "s"
+        s = pd.to_datetime(series, unit=unit, errors="coerce")
         try:
             return s.dt.tz_localize(source_tz).dt.tz_convert("UTC")
         except Exception:
@@ -54,11 +61,12 @@ def _parse_datetimes_to_utc(series: pd.Series, source_tz=SOURCE_TZ) -> pd.Series
     else:
         return s.dt.tz_convert("UTC")
 
+
 def _quarter_boundaries_utc_for_index(index: pd.DatetimeIndex,
                                       local_offset_minutes: int = LOCAL_OFFSET_MINUTES,
                                       tz_name: str = LOCAL_TZ_NAME) -> List[pd.Timestamp]:
     """
-    Build quarter boundaries in local tz (Asia/Tehran = UTC+3:30) at:
+    Build 15m-quarter boundaries in local tz (Asia/Tehran = UTC+3:30) at:
        01:30, 07:30, 13:30, 19:30 and next-day 01:30
     Return tz-aware UTC pandas.Timestamp list.
     """
@@ -92,6 +100,7 @@ def _quarter_boundaries_utc_for_index(index: pd.DatetimeIndex,
             except Exception:
                 local_dt = dt.datetime(year=day.year, month=day.month, day=day.day, hour=hh, minute=mm, tzinfo=local_tz)
                 boundaries_utc.append(pd.Timestamp(local_dt.astimezone(dateutil_tz.tzutc())))
+        # Also append next-day 01:30 to close the last quarter
         nd = day + pd.Timedelta(days=1)
         try:
             local_next = pd.Timestamp(year=nd.year, month=nd.month, day=nd.day, hour=1, minute=30, tz=idx_local.tz)
@@ -102,6 +111,76 @@ def _quarter_boundaries_utc_for_index(index: pd.DatetimeIndex,
 
     boundaries_utc = sorted(list(dict.fromkeys(boundaries_utc)))
     return boundaries_utc
+
+
+def _five_minute_boundaries_utc_for_index(index: pd.DatetimeIndex,
+                                          local_offset_minutes: int = LOCAL_OFFSET_MINUTES,
+                                          tz_name: str = LOCAL_TZ_NAME) -> List[pd.Timestamp]:
+    """
+    Build 5m-quarter boundaries (90-minute steps) based on 15m quarters:
+      For each 15m quarter (start -> next_start) generate:
+        start + 0min, start + 90min, start + 180min, start + 270min, (the next_start is already included)
+    Each returned timestamp is tz-aware UTC pandas.Timestamp.
+
+    NOTE: although this function is named for 5m support, it returns 90-minute boundaries
+    which represent the 5m-quarter divisions (each 90-minute block contains 18 x 5m candles).
+    """
+    if index is None or index.empty:
+        return []
+
+    # Ensure index is UTC-aware
+    if index.tz is None:
+        idx_utc = index.tz_localize("UTC")
+    else:
+        idx_utc = index.tz_convert("UTC")
+
+    # get 15m quarter boundaries in UTC first
+    quarter_boundaries = _quarter_boundaries_utc_for_index(index, local_offset_minutes=local_offset_minutes, tz_name=tz_name)
+    if not quarter_boundaries:
+        return []
+
+    # convert to local tz for arithmetic
+    try:
+        local_tz = dateutil_tz.gettz(tz_name)
+        local_quarters = [qb.tz_convert(tz_name) for qb in quarter_boundaries]
+    except Exception:
+        local_tz = dateutil_tz.tzoffset(None, local_offset_minutes * 60)
+        local_quarters = []
+        for qb in quarter_boundaries:
+            try:
+                local_quarters.append(pd.Timestamp(qb.tz_convert(local_tz)))
+            except Exception:
+                local_quarters.append(pd.Timestamp(qb).tz_convert(local_tz))
+
+    five_min_boundaries_local = []
+
+    # For each consecutive pair of 15m quarter boundaries, produce four 90-minute steps
+    for i in range(len(local_quarters) - 1):
+        start = local_quarters[i]
+        end = local_quarters[i + 1]
+        # duration of a quarter is expected to be 6 hours (360 minutes)
+        # create boundaries at start + k*90 minutes for k=0..3
+        for k in range(4):
+            ts_local = start + pd.Timedelta(minutes=90 * k)
+            # only include if within [start, end]
+            if ts_local >= start and ts_local <= end:
+                five_min_boundaries_local.append(ts_local)
+        # we do NOT append end here because the next iteration's start equals end (except final)
+    # append final quarter end (last element of local_quarters) so boundaries are closed
+    five_min_boundaries_local.append(local_quarters[-1])
+
+    # convert back to UTC and dedupe/sort
+    boundaries_utc = []
+    for ts in five_min_boundaries_local:
+        try:
+            boundaries_utc.append(ts.tz_convert("UTC"))
+        except Exception:
+            # fallback convert
+            boundaries_utc.append(pd.Timestamp(ts).tz_localize(local_tz).tz_convert("UTC"))
+
+    boundaries_utc = sorted(list(dict.fromkeys(boundaries_utc)))
+    return boundaries_utc
+
 
 def _hour_boundaries_utc_for_index(index: pd.DatetimeIndex,
                                    local_offset_minutes: int = LOCAL_OFFSET_MINUTES,
@@ -148,6 +227,7 @@ def _hour_boundaries_utc_for_index(index: pd.DatetimeIndex,
     boundaries_utc = sorted(list(dict.fromkeys(boundaries_utc)))
     return boundaries_utc
 
+
 def _day_boundaries_utc_for_index(index: pd.DatetimeIndex,
                                   local_offset_minutes: int = LOCAL_OFFSET_MINUTES,
                                   tz_name: str = LOCAL_TZ_NAME) -> List[pd.Timestamp]:
@@ -192,57 +272,6 @@ def _day_boundaries_utc_for_index(index: pd.DatetimeIndex,
     boundaries_utc = sorted(list(dict.fromkeys(boundaries_utc)))
     return boundaries_utc
 
-def _five_min_boundaries_utc_for_index(index: pd.DatetimeIndex,
-                                       local_offset_minutes: int = LOCAL_OFFSET_MINUTES,
-                                       tz_name: str = LOCAL_TZ_NAME) -> List[pd.Timestamp]:
-    """
-    Build boundaries for 5m timeframe where each quarter = 90 minutes (four 90-min periods in 15m quarter)
-    Q1 = first 90min, Q2 = second 90min, Q3 = third 90min, Q4 = fourth 90min
-    Return tz-aware UTC pandas.Timestamp list.
-    """
-    if index is None or index.empty:
-        return []
-
-    if index.tz is None:
-        idx_utc = index.tz_localize("UTC")
-    else:
-        idx_utc = index.tz_convert("UTC")
-
-    try:
-        idx_local = idx_utc.tz_convert(tz_name)
-    except Exception:
-        local_tz = dateutil_tz.tzoffset(None, local_offset_minutes * 60)
-        idx_local = idx_utc.tz_convert(local_tz)
-
-    # Expand range to ensure we capture all boundaries
-    start_local = idx_local.min() - pd.Timedelta(hours=6)
-    end_local = idx_local.max() + pd.Timedelta(hours=6)
-    
-    # Generate 90-minute boundaries starting from 01:30 local time
-    boundaries_utc = []
-    
-    # Start from 01:30 of the day before start_local
-    current_local = (start_local.normalize() - pd.Timedelta(days=1)).replace(hour=1, minute=30)
-    
-    while current_local <= end_local:
-        try:
-            boundaries_utc.append(current_local.tz_convert("UTC"))
-        except Exception:
-            local_dt = dt.datetime(
-                year=current_local.year, 
-                month=current_local.month, 
-                day=current_local.day, 
-                hour=current_local.hour, 
-                minute=current_local.minute,
-                tzinfo=current_local.tzinfo
-            )
-            boundaries_utc.append(pd.Timestamp(local_dt).tz_convert("UTC"))
-            
-        # Move to next 90-minute boundary
-        current_local += pd.Timedelta(minutes=90)
-    
-    boundaries_utc = sorted(list(dict.fromkeys(boundaries_utc)))
-    return boundaries_utc
 
 def _get_main_ax_from_mpf_axes(axes):
     if isinstance(axes, (list, tuple)):
@@ -251,27 +280,54 @@ def _get_main_ax_from_mpf_axes(axes):
         return axes.get("main", next(iter(axes.values())))
     return axes
 
+
 def _quarter_index_from_boundary(boundary_utc: pd.Timestamp, tz_name: str = LOCAL_TZ_NAME, timeframe: int = 15) -> int:
     """
     Given a boundary timestamp in UTC, return the quarter index (0..3) based
     on its local time in tz_name (Asia/Tehran) and the timeframe.
-    
+
+    For 5m:  each 15m-quarter is divided into four 90-minute segments:
+           q1 = start + 0..90min, q2 = start+90..start+180, ...
     For 15m: Q1=01:30, Q2=07:30, Q3=13:30, Q4=19:30
-    For 1h: Q1=MON, Q2=TUE, Q3=WED, Q4=THU
-    For 4h: Q1=WEEK1, Q2=WEEK2, Q3=WEEK3, Q4=WEEK4
-    For 5m: Q1=first 90min, Q2=second 90min, Q3=third 90min, Q4=fourth 90min (within 15m quarter)
+    For 1h:  Q1=MON, Q2=TUE, Q3=WED, Q4=THU
+    For 4h:  Q1=WEEK1, Q2=WEEK2, Q3=WEEK3, Q4=WEEK4
     """
     if boundary_utc is None:
         return 0
-    
+
     try:
         if getattr(boundary_utc, "tzinfo", None) is None:
             b_utc = pd.Timestamp(boundary_utc).tz_localize("UTC")
         else:
             b_utc = pd.Timestamp(boundary_utc).tz_convert("UTC")
         local = b_utc.tz_convert(tz_name)
-        
-        if timeframe == 15:
+
+        if timeframe == 5:
+            # Determine which 90-minute segment within the 15m quarter
+            h = local.hour
+            m = local.minute
+            mins = h * 60 + m
+
+            def mm(hh, mm_): return hh * 60 + mm_
+            q1_start = mm(1, 30)
+            q2_start = mm(7, 30)
+            q3_start = mm(13, 30)
+            q4_start = mm(19, 30)
+
+            if q1_start <= mins < q2_start:
+                quarter_start = q1_start
+            elif q2_start <= mins < q3_start:
+                quarter_start = q2_start
+            elif q3_start <= mins < q4_start:
+                quarter_start = q3_start
+            else:
+                quarter_start = q4_start
+
+            # segment: 0..3 each = 90 minutes
+            segment_position = (mins - quarter_start) // 90
+            return int(segment_position % 4)
+
+        elif timeframe == 15:
             h = local.hour
             m = local.minute
             mins = h * 60 + m
@@ -287,8 +343,8 @@ def _quarter_index_from_boundary(boundary_utc: pd.Timestamp, tz_name: str = LOCA
             if q3_start <= mins < q4_start:
                 return 2
             return 3
+
         elif timeframe == 60:
-            # Monday=0, Sunday=6
             weekday = local.weekday()
             if weekday == 0:  # Monday
                 return 0
@@ -299,37 +355,18 @@ def _quarter_index_from_boundary(boundary_utc: pd.Timestamp, tz_name: str = LOCA
             elif weekday == 3:  # Thursday
                 return 3
             else:
-                # For Friday-Sunday, consider as part of previous Thursday's quarter
                 return 3
+
         elif timeframe == 240:
-            # Determine week number of the month (1-4)
-            # Get the first day of the month
-            first_day = local.replace(day=1)
-            # Calculate week number within the month
             week_of_month = (local.day - 1) // 7 + 1
-            # Ensure we stay within 1-4 range
             week_of_month = min(week_of_month, 4)
             return week_of_month - 1
-        elif timeframe == 5:
-            # For 5m, quarters are based on 90-minute periods within a 15m quarter
-            # Q1=01:30-03:00, Q2=03:00-04:30, Q3=04:30-06:00, Q4=06:00-07:30 (for first 15m quarter)
-            # But we need to cycle through Q1-Q4 every 6 hours (4*90min = 360min = 6 hours)
-            h = local.hour
-            m = local.minute
-            mins = h * 60 + m
-            
-            # Find which 6-hour period we're in (0-3)
-            six_hour_period = (mins // 360) % 4  # 360 minutes = 6 hours
-            
-            # Within that 6-hour period, find which 90-minute segment we're in (0-3)
-            mins_in_period = mins % 360
-            quarter_in_period = mins_in_period // 90
-            
-            return int(quarter_in_period)
+
         else:
             return 0
     except Exception:
         return 0
+
 
 def _set_xaxis_labels_in_local_tz(ax, df_index: pd.DatetimeIndex,
                                   local_tz_offset_minutes: int = LOCAL_OFFSET_MINUTES,
@@ -375,23 +412,30 @@ def _set_xaxis_labels_in_local_tz(ax, df_index: pd.DatetimeIndex,
     ax.set_xticks(xticks)
     ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
 
+
 async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.BytesIO]:
     chart_buffers: List[io.BytesIO] = []
-    
+
     # Set time range based on timeframe
     to_date = int(time.time())
-    if timeframe == 15:
-        from_date = to_date - 3 * 24 * 60 * 60  # last 3 days (48 hours)
+    if timeframe == 5:
+        from_date = to_date - 1 * 24 * 60 * 60  # last 24 hours
+    elif timeframe == 15:
+        from_date = to_date - 3 * 24 * 60 * 60  # last 3 days
     elif timeframe == 60:
         from_date = to_date - 7 * 24 * 60 * 60  # last week
     elif timeframe == 240:
         from_date = to_date - 80 * 24 * 60 * 60  # last 80 days
-    elif timeframe == 5:
-        from_date = to_date - 1 * 24 * 60 * 60  # last 24 hours
     else:
         from_date = to_date - 3 * 24 * 60 * 60  # default to 3 days
 
-    tol = pd.Timedelta(hours=NEAR_TOLERANCE_HOURS)
+    # choose tolerance per timeframe: much smaller for 5m because boundaries are 90min apart
+    if timeframe == 5:
+        tol = pd.Timedelta(minutes=45)   # accept nearest candle up to 45 minutes away
+    elif timeframe == 15:
+        tol = pd.Timedelta(minutes=60)
+    else:
+        tol = pd.Timedelta(hours=NEAR_TOLERANCE_HOURS)
 
     for symbol in symbols:
         fig = None
@@ -424,14 +468,14 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 df.index = df.index.tz_convert("UTC")
 
             # Compute boundaries based on timeframe
-            if timeframe == 15:
+            if timeframe == 5:
+                boundaries = _five_minute_boundaries_utc_for_index(df.index, local_offset_minutes=LOCAL_OFFSET_MINUTES, tz_name=LOCAL_TZ_NAME)
+            elif timeframe == 15:
                 boundaries = _quarter_boundaries_utc_for_index(df.index, local_offset_minutes=LOCAL_OFFSET_MINUTES, tz_name=LOCAL_TZ_NAME)
             elif timeframe == 60:
                 boundaries = _hour_boundaries_utc_for_index(df.index, local_offset_minutes=LOCAL_OFFSET_MINUTES, tz_name=LOCAL_TZ_NAME)
             elif timeframe == 240:
                 boundaries = _day_boundaries_utc_for_index(df.index, local_offset_minutes=LOCAL_OFFSET_MINUTES, tz_name=LOCAL_TZ_NAME)
-            elif timeframe == 5:
-                boundaries = _five_min_boundaries_utc_for_index(df.index, local_offset_minutes=LOCAL_OFFSET_MINUTES, tz_name=LOCAL_TZ_NAME)
             else:
                 boundaries = _quarter_boundaries_utc_for_index(df.index, local_offset_minutes=LOCAL_OFFSET_MINUTES, tz_name=LOCAL_TZ_NAME)
 
@@ -465,8 +509,8 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                     nearest_ts = df.index[pos]
                     delta = abs((nearest_ts - b).total_seconds())
                     if delta > tol.total_seconds():
-                        logger.info("[ChartService] Skipping boundary %s: nearest candle at %s is %.1f hours away (> %s h)",
-                                    b.isoformat(), nearest_ts.isoformat(), delta / 3600.0, NEAR_TOLERANCE_HOURS)
+                        logger.info("[ChartService] Skipping boundary %s: nearest candle at %s is %.1f seconds away (> tol %s)",
+                                    b.isoformat(), nearest_ts.isoformat(), delta, tol)
                         continue
                     if used_x_centers and pos < len(used_x_centers):
                         x_coords_for_boundaries.append(used_x_centers[pos])
@@ -551,7 +595,7 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                     interval_open_ts.append(None)
 
             # Pre-compute quarter index for each good boundary based on timeframe
-            boundary_quarter_idx = [ _quarter_index_from_boundary(b, tz_name=LOCAL_TZ_NAME, timeframe=timeframe) for b in good_boundaries ]
+            boundary_quarter_idx = [_quarter_index_from_boundary(b, tz_name=LOCAL_TZ_NAME, timeframe=timeframe) for b in good_boundaries]
 
             for i in range(max(0, len(good_boundaries) - 2)):
                 prev_h = interval_highs[i]
@@ -611,10 +655,10 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 n_bounds = len(good_boundaries)
                 if n_bounds >= 5:
                     for start in range(0, n_bounds - 4):
-                        window_q = boundary_quarter_idx[start:start+4]
+                        window_q = boundary_quarter_idx[start:start + 4]
                         if len(window_q) < 4:
                             continue
-                        if window_q == [0,1,2,3]:
+                        if window_q == [0, 1, 2, 3]:
                             open_ts = interval_open_ts[start + 1]
                             open_price = None
                             xstart = None
@@ -699,11 +743,3 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                     plt.close(fig)
 
     return chart_buffers
-
-# Updated function for 5m timeframe
-async def generate_chart_5m(symbols: List[str]) -> List[io.BytesIO]:
-    """
-    Implementation for 5m timeframe that returns data for previous 24 hours
-    Each quarter (Q1-Q4) represents 90 minutes of data
-    """
-    return await generate_chart(symbols, timeframe=5)

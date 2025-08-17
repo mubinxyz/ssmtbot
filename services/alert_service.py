@@ -96,17 +96,56 @@ def get_active_alerts():
 
 # Define group characteristics
 GROUP_CHARACTERISTICS = {
-    "dxy_eu_gu": {
+    # --- Existing Test Groups (from tests) ---
+    "test_move_group": {
+        "label": "Test Move Together",
+        "symbols": ["AAA", "BBB", "CCC"],
+        "type": "move_together"
+    },
+    "test_reverse_group": {
+        "label": "Test Reverse Moving",
+        "symbols": ["DDD", "EEE", "FFF"],
+        "type": "reverse_moving"
+    },
+    # --- Real Groups ---
+    # Forex
+    "dxy_eu_gu": { # Assuming this is the canonical ID used in handlers
         "label": "DXY / EURUSD / GBPUSD",
-        "symbols": ["USDX", "EURUSD", "GBPUSD"],
+        "symbols": ["USDX", "EURUSD", "GBPUSD"], # Symbols as expected by get_data
         "type": "reverse_moving" # DXY often moves inversely to EU/GU
     },
-    # Add more groups as needed
-    # "btc_eth_xrp": {
-    #     "label": "BTC / ETH / XRP",
-    #     "symbols": ["BTCUSD", "ETHUSD", "XRPUSD"],
+    # Crypto
+    "btc_eth_xrp": { # Assuming this is the canonical ID used in handlers
+        "label": "BTCUSD / ETHUSD / XRPUSD",
+        "symbols": ["BTCUSD", "ETHUSD", "XRPUSD"], # Symbols as expected by get_data
+        "type": "move_together" # Major cryptos often move together
+    },
+    # Futures
+    "spx_nq_ym": { # Assuming this is the canonical ID used in handlers
+         "label": "S&P500 (SPX) / NASDAQ (NQ) / DOW (YM)", # Label as per futures_handler menu
+         "symbols": ["SPX", "NQ", "YM"], # Symbols as expected by get_data
+         "type": "move_together" # US indices often move together
+    },
+    # Metals
+    "dxy_xau_xag_aud": { # Assuming this is the canonical ID used in handlers
+         "label": "DXY / XAU / XAG / AUD", # Label as per metals_handler menu
+         "symbols": ["USDX", "XAU", "XAG", "AUD"], # Symbols as expected by get_data
+         "type": "reverse_moving" # DXY often moves inversely to precious metals and AUD
+    }
+    # Add more groups as needed, e.g., if you uncomment btc_eth_total, btc_xrp_doge, etc.
+    # "btc_eth_total": {
+    #     "label": "BTCUSD / ETHUSD / TOTAL",
+    #     "symbols": ["BTCUSD", "ETHUSD", "TOTAL"], # Check if 'TOTAL' is the correct symbol
     #     "type": "move_together"
-    # }
+    # },
+    # Uncomment and define others if activated in handlers
+    # "dxy_chf_jpy": { ... },
+    # "dxy_aud_nzd": { ... },
+    # "btc_xrp_doge": { ... },
+    # "es_nq_dow": { ... },
+    # "spx_dow_nq": { ... },
+    # "xau_xag_aud": { ... },
+    # "dxy_xau_aud": { ... },
 }
 
 def _find_group_category_by_group_id_flexible(gid: str):

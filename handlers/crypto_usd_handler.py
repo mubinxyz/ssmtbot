@@ -19,8 +19,8 @@ GROUP_ID_SET = {
 
 FALLBACK_SYMBOLS = {
     "btc_eth_xrp": ["BTCUSD", "ETHUSD", "XRPUSD"],
-    "btc_eth_total": ["BTCUSD", "ETHUSD", "TOTAL"],
-    "btc_xrp_doge": ["BTCUSD", "XRPUSD", "DOGEUSD"],
+    # "btc_eth_total": ["BTCUSD", "ETHUSD", "TOTAL"],
+    # "btc_xrp_doge": ["BTCUSD", "XRPUSD", "DOGEUSD"],
 }
 
 # timeframe choices (in minutes). 1440 == 1 day
@@ -29,8 +29,8 @@ TIMEFRAMES = [5, 15, 60, 240]
 def _menu_kb() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton("BTCUSD / ETHUSD / XRPUSD", callback_data="btc_eth_xrp")],
-        [InlineKeyboardButton("BTCUSD / ETHUSD / TOTAL", callback_data="btc_eth_total")],
-        [InlineKeyboardButton("BTCUSD / XRPUSD / DOGEUSD", callback_data="btc_xrp_doge")],
+        # [InlineKeyboardButton("BTCUSD / ETHUSD / TOTAL", callback_data="btc_eth_total")],
+        # [InlineKeyboardButton("BTCUSD / XRPUSD / DOGEUSD", callback_data="btc_xrp_doge")],
         [InlineKeyboardButton("🔙 Back", callback_data="back_to_main")],
     ]
     return InlineKeyboardMarkup(buttons)

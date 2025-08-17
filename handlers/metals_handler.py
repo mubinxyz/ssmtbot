@@ -20,8 +20,8 @@ GROUP_ID_SET = {
 # Use LiteFinance-friendly symbols (we normalize elsewhere)
 FALLBACK_SYMBOLS = {
     "dxy_xau_xag_aud": ["USDX", "XAU", "XAG", "AUD"],
-    "xau_xag_aud": ["XAU", "XAG", "AUD"],
-    "dxy_xau_aud": ["USDX", "XAU", "AUD"],
+    # "xau_xag_aud": ["XAU", "XAG", "AUD"],
+    # "dxy_xau_aud": ["USDX", "XAU", "AUD"],
 }
 
 # Which timeframes the user can choose from (minutes)
