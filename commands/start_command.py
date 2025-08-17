@@ -1,8 +1,24 @@
 # commands/start_command.py
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from keyboards.main_menu import get_main_menu
+
+
+def get_main_menu() -> InlineKeyboardMarkup:
+    """
+    Returns the main menu inline keyboard with market categories and an Alerts entry.
+    """
+    buttons = [
+        [InlineKeyboardButton("📊 FOREX CURRENCIES", callback_data="menu_forex")],
+        [InlineKeyboardButton("📈 FUTURES (STOCKS)", callback_data="menu_futures")],
+        [InlineKeyboardButton("💰 CRYPTO CURRENCY (USD)", callback_data="menu_crypto_usd")],
+        [InlineKeyboardButton("💵 CRYPTO CURRENCY (USDT) (coming soon)", callback_data="menu_crypto_usdt")],
+        [InlineKeyboardButton("🪙 METALS", callback_data="menu_metals")],
+        # Alerts row appended at the end:
+        [InlineKeyboardButton("🔔 Alerts", callback_data="menu_alerts")],
+    ]
+    return InlineKeyboardMarkup(buttons)
+
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """

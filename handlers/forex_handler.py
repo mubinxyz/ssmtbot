@@ -19,19 +19,19 @@ GROUP_ID_SET = {
 
 FALLBACK_SYMBOLS = {
     "dxy_eu_gu": ["USDX", "EURUSD", "GBPUSD"],
-    "dxy_chf_jpy": ["USDX", "CHF", "JPY"],
-    "dxy_aud_nzd": ["USDX", "AUD", "NZD"],
+    # "dxy_chf_jpy": ["USDX", "CHF", "JPY"],
+    # "dxy_aud_nzd": ["USDX", "AUD", "NZD"],
 }
 
 # timeframe choices (minutes). 1440 == 1 day
-TIMEFRAMES = [1, 5, 15, 60, 240, 1440]
+TIMEFRAMES = [5, 15, 60, 240]
 
 
 def _menu_kb() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton("DXY / EURUSD / GBPUSD", callback_data="dxy_eu_gu")],
-        [InlineKeyboardButton("DXY / CHF / JPY", callback_data="dxy_chf_jpy")],
-        [InlineKeyboardButton("DXY / AUD / NZD", callback_data="dxy_aud_nzd")],
+        # [InlineKeyboardButton("DXY / CHF / JPY", callback_data="dxy_chf_jpy")],
+        # [InlineKeyboardButton("DXY / AUD / NZD", callback_data="dxy_aud_nzd")],
         [InlineKeyboardButton("🔙 Back", callback_data="back_to_main")],
     ]
     return InlineKeyboardMarkup(buttons)

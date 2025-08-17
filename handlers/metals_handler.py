@@ -25,8 +25,7 @@ FALLBACK_SYMBOLS = {
 }
 
 # Which timeframes the user can choose from (minutes)
-TIMEFRAMES = [1, 5, 15, 60, 240, 1440]  # 1440 = daily
-
+TIMEFRAMES = [5, 15, 60, 240]
 
 def _menu_kb() -> InlineKeyboardMarkup:
     buttons = [

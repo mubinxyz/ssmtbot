@@ -24,8 +24,7 @@ FALLBACK_SYMBOLS = {
 }
 
 # timeframe choices (in minutes). 1440 == 1 day
-TIMEFRAMES = [1, 5, 15, 60, 240, 1440]
-
+TIMEFRAMES = [5, 15, 60, 240]
 
 def _menu_kb() -> InlineKeyboardMarkup:
     buttons = [

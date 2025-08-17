@@ -23,7 +23,7 @@ FALLBACK_SYMBOLS = {
     "spx_dow_nq": ["SPX", "DOW", "NQ"],
 }
 
-TIMEFRAMES = [1, 5, 15, 60, 240, 1440]
+TIMEFRAMES = [5, 15, 60, 240]
 
 
 def _menu_kb() -> InlineKeyboardMarkup:
