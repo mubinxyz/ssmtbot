@@ -1,18 +1,17 @@
 # services/chart_service.py
+
 import io
 import time
 import logging
 from contextlib import suppress
 from typing import List, Optional
 import datetime as dt
-
 import pandas as pd
 import mplfinance as mpf
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.dates as mdates
 from dateutil import tz as dateutil_tz
-
 from utils.get_data import get_ohlc
 from utils.normalize_data import normalize_symbol
 
@@ -20,9 +19,7 @@ logger = logging.getLogger("services.chart_service")
 logging.basicConfig(level=logging.INFO)
 
 # ---------- CONFIG ----------
-# Provider timestamps: UTC+3 (e.g. LiteFinance). Keep as tzoffset(+3h).
 SOURCE_TZ = dateutil_tz.tzoffset(None, 3 * 3600)   # provider = UTC+3
-# Quarters and labels: Asia/Tehran (UTC+3:30)
 LOCAL_TZ_NAME = "Asia/Tehran"
 LOCAL_OFFSET_MINUTES = 210                         # fallback +3:30
 NEAR_TOLERANCE_HOURS = 3                           # tolerance used to decide "nearby" candle
@@ -30,7 +27,6 @@ QUARTER_COLORS = ["C2", "C3", "C4", "C5"]
 TRUEOPEN_COLOR = "C6"
 TRUEOPEN_STYLE = "--"
 # ---------------------------
-
 
 def _parse_datetimes_to_utc(series: pd.Series, source_tz=SOURCE_TZ) -> pd.Series:
     """
@@ -41,17 +37,14 @@ def _parse_datetimes_to_utc(series: pd.Series, source_tz=SOURCE_TZ) -> pd.Series
     Returns tz-aware UTC Series.
     """
     if pd.api.types.is_integer_dtype(series) or pd.api.types.is_float_dtype(series):
-        # parse epoch seconds as naive datetimes then localize to provider tz (SOURCE_TZ)
         s = pd.to_datetime(series, unit="s", errors="coerce")
         try:
             return s.dt.tz_localize(source_tz).dt.tz_convert("UTC")
         except Exception:
-            # fallback localization using offset minutes if SOURCE_TZ problematic
             fallback = dateutil_tz.tzoffset(None, LOCAL_OFFSET_MINUTES * 60)
             return s.dt.tz_localize(fallback).dt.tz_convert("UTC")
 
     s = pd.to_datetime(series, errors="coerce")
-    # if no tz info, treat as coming from source_tz then convert to UTC
     if s.dt.tz is None:
         try:
             return s.dt.tz_localize(source_tz).dt.tz_convert("UTC")
@@ -60,7 +53,6 @@ def _parse_datetimes_to_utc(series: pd.Series, source_tz=SOURCE_TZ) -> pd.Series
             return s.dt.tz_localize(fallback).dt.tz_convert("UTC")
     else:
         return s.dt.tz_convert("UTC")
-
 
 def _quarter_boundaries_utc_for_index(index: pd.DatetimeIndex,
                                       local_offset_minutes: int = LOCAL_OFFSET_MINUTES,
@@ -73,13 +65,11 @@ def _quarter_boundaries_utc_for_index(index: pd.DatetimeIndex,
     if index is None or index.empty:
         return []
 
-    # ensure tz-aware UTC index
     if index.tz is None:
         idx_utc = index.tz_localize("UTC")
     else:
         idx_utc = index.tz_convert("UTC")
 
-    # convert to local tz to enumerate local calendar days
     try:
         idx_local = idx_utc.tz_convert(tz_name)
         local_tz = idx_local.tz
@@ -87,7 +77,6 @@ def _quarter_boundaries_utc_for_index(index: pd.DatetimeIndex,
         local_tz = dateutil_tz.tzoffset(None, local_offset_minutes * 60)
         idx_local = idx_utc.tz_convert(local_tz)
 
-    # expand days a bit so we don't lose edges
     start_local = (idx_local.min() - pd.Timedelta(days=1)).normalize()
     end_local = (idx_local.max() + pd.Timedelta(days=1)).normalize()
     days = pd.date_range(start=start_local, end=end_local, freq="D", tz=idx_local.tz)
@@ -103,7 +92,6 @@ def _quarter_boundaries_utc_for_index(index: pd.DatetimeIndex,
             except Exception:
                 local_dt = dt.datetime(year=day.year, month=day.month, day=day.day, hour=hh, minute=mm, tzinfo=local_tz)
                 boundaries_utc.append(pd.Timestamp(local_dt.astimezone(dateutil_tz.tzutc())))
-        # next day 01:30
         nd = day + pd.Timedelta(days=1)
         try:
             local_next = pd.Timestamp(year=nd.year, month=nd.month, day=nd.day, hour=1, minute=30, tz=idx_local.tz)
@@ -112,10 +100,97 @@ def _quarter_boundaries_utc_for_index(index: pd.DatetimeIndex,
             local_dt_next = dt.datetime(year=nd.year, month=nd.month, day=nd.day, hour=1, minute=30, tzinfo=local_tz)
             boundaries_utc.append(pd.Timestamp(local_dt_next.astimezone(dateutil_tz.tzutc())))
 
-    # sort + unique
     boundaries_utc = sorted(list(dict.fromkeys(boundaries_utc)))
     return boundaries_utc
 
+def _hour_boundaries_utc_for_index(index: pd.DatetimeIndex,
+                                   local_offset_minutes: int = LOCAL_OFFSET_MINUTES,
+                                   tz_name: str = LOCAL_TZ_NAME) -> List[pd.Timestamp]:
+    """
+    Build hour boundaries in local tz (Asia/Tehran = UTC+3:30) for weekly quarters:
+       MON = Q1, TUE = Q2, WED = Q3, THU = Q4
+    Return tz-aware UTC pandas.Timestamp list.
+    """
+    if index is None or index.empty:
+        return []
+
+    if index.tz is None:
+        idx_utc = index.tz_localize("UTC")
+    else:
+        idx_utc = index.tz_convert("UTC")
+
+    try:
+        idx_local = idx_utc.tz_convert(tz_name)
+    except Exception:
+        local_tz = dateutil_tz.tzoffset(None, local_offset_minutes * 60)
+        idx_local = idx_utc.tz_convert(local_tz)
+
+    # Expand range to ensure we capture all boundaries
+    start_local = idx_local.min() - pd.Timedelta(days=7)
+    end_local = idx_local.max() + pd.Timedelta(days=7)
+    
+    # Generate all dates in the range
+    dates = pd.date_range(start=start_local.normalize(), end=end_local.normalize(), freq="D", tz=idx_local.tz)
+    
+    boundaries_utc = []
+    # Only consider Monday through Thursday
+    for date in dates:
+        weekday = date.weekday()  # Monday=0, Sunday=6
+        if weekday in [0, 1, 2, 3]:  # MON, TUE, WED, THU
+            # Set time to 00:00 in local time
+            try:
+                local_boundary = date.normalize()
+                boundaries_utc.append(local_boundary.tz_convert("UTC"))
+            except Exception:
+                local_dt = dt.datetime(year=date.year, month=date.month, day=date.day, tzinfo=date.tzinfo)
+                boundaries_utc.append(pd.Timestamp(local_dt).tz_convert("UTC"))
+    
+    boundaries_utc = sorted(list(dict.fromkeys(boundaries_utc)))
+    return boundaries_utc
+
+def _day_boundaries_utc_for_index(index: pd.DatetimeIndex,
+                                  local_offset_minutes: int = LOCAL_OFFSET_MINUTES,
+                                  tz_name: str = LOCAL_TZ_NAME) -> List[pd.Timestamp]:
+    """
+    Build day boundaries in local tz (Asia/Tehran = UTC+3:30) for monthly quarters:
+       WEEK1 = Q1, WEEK2 = Q2, WEEK3 = Q3, WEEK4 = Q4
+    Return tz-aware UTC pandas.Timestamp list.
+    """
+    if index is None or index.empty:
+        return []
+
+    if index.tz is None:
+        idx_utc = index.tz_localize("UTC")
+    else:
+        idx_utc = index.tz_convert("UTC")
+
+    try:
+        idx_local = idx_utc.tz_convert(tz_name)
+    except Exception:
+        local_tz = dateutil_tz.tzoffset(None, local_offset_minutes * 60)
+        idx_local = idx_utc.tz_convert(local_tz)
+
+    # Expand range to ensure we capture all boundaries
+    start_local = idx_local.min() - pd.Timedelta(days=30)
+    end_local = idx_local.max() + pd.Timedelta(days=30)
+    
+    # Generate week boundaries (start of each week, Monday)
+    boundaries_utc = []
+    current = start_local.normalize()
+    
+    while current <= end_local:
+        # If this is a Monday, it's a week boundary
+        if current.weekday() == 0:  # Monday
+            try:
+                local_boundary = current.normalize()
+                boundaries_utc.append(local_boundary.tz_convert("UTC"))
+            except Exception:
+                local_dt = dt.datetime(year=current.year, month=current.month, day=current.day, tzinfo=current.tzinfo)
+                boundaries_utc.append(pd.Timestamp(local_dt).tz_convert("UTC"))
+        current += pd.Timedelta(days=1)
+    
+    boundaries_utc = sorted(list(dict.fromkeys(boundaries_utc)))
+    return boundaries_utc
 
 def _get_main_ax_from_mpf_axes(axes):
     if isinstance(axes, (list, tuple)):
@@ -124,51 +199,68 @@ def _get_main_ax_from_mpf_axes(axes):
         return axes.get("main", next(iter(axes.values())))
     return axes
 
-
-def _quarter_index_from_boundary(boundary_utc: pd.Timestamp, tz_name: str = LOCAL_TZ_NAME) -> int:
+def _quarter_index_from_boundary(boundary_utc: pd.Timestamp, tz_name: str = LOCAL_TZ_NAME, timeframe: int = 15) -> int:
     """
     Given a boundary timestamp in UTC, return the quarter index (0..3) based
-    on its local time in tz_name (Asia/Tehran).
-    Quarters (local times):
-      Q1 start = 01:30
-      Q2 start = 07:30
-      Q3 start = 13:30
-      Q4 start = 19:30
-    The interval [start_of_Qi, start_of_Q(i+1)) belongs to Qi.
+    on its local time in tz_name (Asia/Tehran) and the timeframe.
+    
+    For 15m: Q1=01:30, Q2=07:30, Q3=13:30, Q4=19:30
+    For 1h: Q1=MON, Q2=TUE, Q3=WED, Q4=THU
+    For 4h: Q1=WEEK1, Q2=WEEK2, Q3=WEEK3, Q4=WEEK4
     """
     if boundary_utc is None:
         return 0
+    
     try:
         if getattr(boundary_utc, "tzinfo", None) is None:
             b_utc = pd.Timestamp(boundary_utc).tz_localize("UTC")
         else:
             b_utc = pd.Timestamp(boundary_utc).tz_convert("UTC")
         local = b_utc.tz_convert(tz_name)
-        h = local.hour
-        m = local.minute
-        # Compute minutes since midnight for easier comparison
-        mins = h * 60 + m
-        def mm(hh, mm_): return hh * 60 + mm_
-        q1_start = mm(1, 30)
-        q2_start = mm(7, 30)
-        q3_start = mm(13, 30)
-        q4_start = mm(19, 30)
-        # ranges:
-        # Q1: [01:30, 07:30)
-        # Q2: [07:30, 13:30)
-        # Q3: [13:30, 19:30)
-        # Q4: [19:30, 24:00) and [00:00, 01:30)
-        if q1_start <= mins < q2_start:
+        
+        if timeframe == 15:
+            h = local.hour
+            m = local.minute
+            mins = h * 60 + m
+            def mm(hh, mm_): return hh * 60 + mm_
+            q1_start = mm(1, 30)
+            q2_start = mm(7, 30)
+            q3_start = mm(13, 30)
+            q4_start = mm(19, 30)
+            if q1_start <= mins < q2_start:
+                return 0
+            if q2_start <= mins < q3_start:
+                return 1
+            if q3_start <= mins < q4_start:
+                return 2
+            return 3
+        elif timeframe == 60:
+            # Monday=0, Sunday=6
+            weekday = local.weekday()
+            if weekday == 0:  # Monday
+                return 0
+            elif weekday == 1:  # Tuesday
+                return 1
+            elif weekday == 2:  # Wednesday
+                return 2
+            elif weekday == 3:  # Thursday
+                return 3
+            else:
+                # For Friday-Sunday, consider as part of previous Thursday's quarter
+                return 3
+        elif timeframe == 240:
+            # Determine week number of the month (1-4)
+            # Get the first day of the month
+            first_day = local.replace(day=1)
+            # Calculate week number within the month
+            week_of_month = (local.day - 1) // 7 + 1
+            # Ensure we stay within 1-4 range
+            week_of_month = min(week_of_month, 4)
+            return week_of_month - 1
+        else:
             return 0
-        if q2_start <= mins < q3_start:
-            return 1
-        if q3_start <= mins < q4_start:
-            return 2
-        # else it's Q4 (either >=19:30 or <01:30)
-        return 3
     except Exception:
         return 0
-
 
 def _set_xaxis_labels_in_local_tz(ax, df_index: pd.DatetimeIndex,
                                   local_tz_offset_minutes: int = LOCAL_OFFSET_MINUTES,
@@ -188,17 +280,14 @@ def _set_xaxis_labels_in_local_tz(ax, df_index: pd.DatetimeIndex,
     labels = []
     for xt in xticks:
         label_dt = None
-        # Primary: convert Matplotlib date number to a datetime and convert tz
         try:
             dt_from_num = mdates.num2date(xt)
             if dt_from_num.tzinfo is None:
-                # assume axis dates are UTC-based
                 dt_from_num = dt_from_num.replace(tzinfo=dateutil_tz.tzutc())
             label_dt = dt_from_num.astimezone(local_tz)
         except Exception:
             label_dt = None
 
-        # Fallback: try to map tick to index position only if xt appears to correspond to candle positions.
         if label_dt is None:
             try:
                 pos = int(round(float(xt)))
@@ -217,13 +306,22 @@ def _set_xaxis_labels_in_local_tz(ax, df_index: pd.DatetimeIndex,
     ax.set_xticks(xticks)
     ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
 
-
 async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.BytesIO]:
     chart_buffers: List[io.BytesIO] = []
+    
+    # Set time range based on timeframe
     to_date = int(time.time())
-    from_date = to_date - 3 * 24 * 60 * 60  # last 3 days
+    if timeframe == 15:
+        from_date = to_date - 3 * 24 * 60 * 60  # last 3 days (48 hours)
+    elif timeframe == 60:
+        from_date = to_date - 7 * 24 * 60 * 60  # last week
+    elif timeframe == 240:
+        from_date = to_date - 80 * 24 * 60 * 60  # last 80 days
+    elif timeframe == 5:
+        from_date = to_date - 1 * 24 * 60 * 60  # last day
+    else:
+        from_date = to_date - 3 * 24 * 60 * 60  # default to 3 days
 
-    # tolerance used to decide if a boundary is "close enough" to any candle
     tol = pd.Timedelta(hours=NEAR_TOLERANCE_HOURS)
 
     for symbol in symbols:
@@ -239,7 +337,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 logger.error("[ChartService] 'datetime' column missing for %s", norm_symbol)
                 continue
 
-            # parse datetimes deterministically into tz-aware UTC
             try:
                 df["datetime"] = _parse_datetimes_to_utc(df["datetime"], source_tz=SOURCE_TZ)
             except Exception as e:
@@ -251,24 +348,27 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 logger.warning("[ChartService] No valid timestamps for %s after parsing", norm_symbol)
                 continue
 
-            # set tz-aware UTC index
             df.set_index("datetime", inplace=True)
             if df.index.tz is None:
                 df.index = df.index.tz_localize("UTC")
             else:
                 df.index = df.index.tz_convert("UTC")
 
-            # compute quarter boundaries local->UTC (quarters are defined in Asia/Tehran = UTC+3:30)
-            boundaries = _quarter_boundaries_utc_for_index(df.index, local_offset_minutes=LOCAL_OFFSET_MINUTES, tz_name=LOCAL_TZ_NAME)
+            # Compute boundaries based on timeframe
+            if timeframe == 15:
+                boundaries = _quarter_boundaries_utc_for_index(df.index, local_offset_minutes=LOCAL_OFFSET_MINUTES, tz_name=LOCAL_TZ_NAME)
+            elif timeframe == 60:
+                boundaries = _hour_boundaries_utc_for_index(df.index, local_offset_minutes=LOCAL_OFFSET_MINUTES, tz_name=LOCAL_TZ_NAME)
+            elif timeframe == 240:
+                boundaries = _day_boundaries_utc_for_index(df.index, local_offset_minutes=LOCAL_OFFSET_MINUTES, tz_name=LOCAL_TZ_NAME)
+            else:
+                boundaries = _quarter_boundaries_utc_for_index(df.index, local_offset_minutes=LOCAL_OFFSET_MINUTES, tz_name=LOCAL_TZ_NAME)
 
-            # we want boundaries that are inside data range +/- tol
             filtered_boundaries = [b for b in boundaries if (b >= (df.index.min() - tol) and b <= (df.index.max() + tol))]
 
-            # Plot candles (mplfinance expects tz-aware index in UTC is fine)
             fig, axes = mpf.plot(df, type="candle", style="yahoo", ylabel="Price", figsize=(18, 9), volume=False, returnfig=True)
             main_ax = _get_main_ax_from_mpf_axes(axes)
 
-            # detect candle centers (precise x coords)
             rects = []
             for child in main_ax.get_children():
                 if isinstance(child, mpatches.Rectangle):
@@ -283,7 +383,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 rects_sorted = sorted(rects, key=lambda r: r.get_x())
                 used_x_centers = [r.get_x() + r.get_width() / 2.0 for r in rects_sorted]
 
-            # Map boundaries -> x coords but only if nearest candle within tol
             x_coords_for_boundaries: List[float] = []
             good_boundaries: List[pd.Timestamp] = []
             for b in filtered_boundaries:
@@ -298,7 +397,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                         logger.info("[ChartService] Skipping boundary %s: nearest candle at %s is %.1f hours away (> %s h)",
                                     b.isoformat(), nearest_ts.isoformat(), delta / 3600.0, NEAR_TOLERANCE_HOURS)
                         continue
-                    # accepted
                     if used_x_centers and pos < len(used_x_centers):
                         x_coords_for_boundaries.append(used_x_centers[pos])
                     else:
@@ -309,7 +407,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 except Exception as ex:
                     logger.debug("Failed to map boundary %r: %s", b, ex)
 
-            # Draw vertical lines for accepted boundaries
             for idx_b, b in enumerate(good_boundaries):
                 try:
                     xcoord = x_coords_for_boundaries[idx_b]
@@ -317,7 +414,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 except Exception as ex:
                     logger.debug("Failed to draw vertical for %r: %s", b, ex)
 
-            # robust column selection
             def _col_choice(df_obj, *candidates):
                 for c in candidates:
                     if c in df_obj.columns:
@@ -332,7 +428,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
             low_col = _col_choice(df, "Low", "low")
             open_col = _col_choice(df, "Open", "open")
 
-            # compute interval highs/lows/opens between consecutive good_boundaries
             interval_highs = []
             interval_lows = []
             interval_high_ts = []
@@ -384,10 +479,9 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                     interval_low_ts.append(None)
                     interval_open_ts.append(None)
 
-            # Pre-compute quarter index for each good boundary
-            boundary_quarter_idx = [ _quarter_index_from_boundary(b, tz_name=LOCAL_TZ_NAME) for b in good_boundaries ]
+            # Pre-compute quarter index for each good boundary based on timeframe
+            boundary_quarter_idx = [ _quarter_index_from_boundary(b, tz_name=LOCAL_TZ_NAME, timeframe=timeframe) for b in good_boundaries ]
 
-            # Draw prev-quarter HIGH/LOW horizontals (use actual quarter index for color)
             for i in range(max(0, len(good_boundaries) - 2)):
                 prev_h = interval_highs[i]
                 prev_l = interval_lows[i]
@@ -396,7 +490,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 q_idx = boundary_quarter_idx[i] if i < len(boundary_quarter_idx) else (i % 4)
                 q_color = QUARTER_COLORS[q_idx % 4]
 
-                # xend = right boundary of next interval (i+2)
                 try:
                     xend = x_coords_for_boundaries[i + 2]
                 except Exception:
@@ -441,20 +534,17 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 except Exception as ex:
                     logger.debug("Failed to draw prev-quarter HL for %s interval %d: %s", norm_symbol, i, ex)
 
-            # TRUE-OPEN: open-of-Q2 -> end-of-Q4 (single line per detected 0,1,2,3 block)
             if open_col is None:
                 logger.debug("[ChartService] Open column not found for %s; skipping true-open lines", norm_symbol)
             else:
                 n_bounds = len(good_boundaries)
                 if n_bounds >= 5:
-                    # find windows where quarter sequence is [0,1,2,3]
                     for start in range(0, n_bounds - 4):
                         window_q = boundary_quarter_idx[start:start+4]
                         if len(window_q) < 4:
                             continue
                         if window_q == [0,1,2,3]:
-                            # Q2 open is at interval_open_ts[start+1]
-                            open_ts = interval_open_ts[start + 1]  # Q2 first candle
+                            open_ts = interval_open_ts[start + 1]
                             open_price = None
                             xstart = None
                             if open_ts is not None:
@@ -476,7 +566,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                                 except Exception:
                                     continue
 
-                            # xend is right boundary of Q4: which is good_boundaries[start+4]
                             try:
                                 xend = x_coords_for_boundaries[start + 4]
                             except Exception:
@@ -494,7 +583,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                             except Exception as ex:
                                 logger.debug("Failed to draw true-open for %s window starting at %d: %s", norm_symbol, start, ex)
 
-            # Quarter labels Q1..Q4 using actual quarter index per interval
             if x_coords_for_boundaries and len(x_coords_for_boundaries) >= 2:
                 try:
                     y_min, y_max = main_ax.get_ylim()
@@ -517,13 +605,11 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                     except Exception as ex:
                         logger.debug("Failed to draw quarter label %s at x=%r: %s", qname, x_label, ex)
 
-            # x-axis labels in local tz (Asia/Tehran = UTC+3:30)
             try:
                 _set_xaxis_labels_in_local_tz(main_ax, df.index, local_tz_offset_minutes=LOCAL_OFFSET_MINUTES, fmt="%b %d %H:%M", tz_name=LOCAL_TZ_NAME)
             except Exception as ex:
                 logger.debug("Failed to set x-axis labels in local tz for %s: %s", norm_symbol, ex)
 
-            # Save figure
             if fig is not None:
                 fig.suptitle(f"{norm_symbol} - {timeframe}min", fontsize=12, color="gray", alpha=0.6)
                 with suppress(Exception):
@@ -541,4 +627,13 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 if fig is not None:
                     plt.close(fig)
 
+    return chart_buffers
+
+# New function for 5m timeframe (coming soon)
+async def generate_chart_5m(symbols: List[str]) -> List[io.BytesIO]:
+    """
+    Coming soon implementation for 5m timeframe
+    """
+    chart_buffers: List[io.BytesIO] = []
+    # For now, just return empty list
     return chart_buffers
