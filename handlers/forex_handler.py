@@ -23,7 +23,8 @@ FALLBACK_SYMBOLS = {
     "dxy_aud_nzd": ["USDX", "AUD", "NZD"],
 }
 
-TIMEFRAMES = [1, 5, 15, 60, 240, 1440]  # minutes; 1440 == 1d
+# timeframe choices (minutes). 1440 == 1 day
+TIMEFRAMES = [1, 5, 15, 60, 240, 1440]
 
 
 def _menu_kb() -> InlineKeyboardMarkup:
@@ -39,7 +40,7 @@ def _menu_kb() -> InlineKeyboardMarkup:
 def _timeframe_kb(gid: str) -> InlineKeyboardMarkup:
     rows = []
     row = []
-    for i, tf in enumerate(TIMEFRAMES):
+    for tf in TIMEFRAMES:
         label = f"{tf}m" if tf < 1440 else "1d"
         row.append(InlineKeyboardButton(label, callback_data=f"timeframe::{gid}::{tf}"))
         if len(row) == 2:
@@ -126,18 +127,21 @@ async def charts_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await q.edit_message_text("Invalid timeframe.")
         return
+
     label, symbols = _resolve_label_and_symbols(gid)
     if not symbols:
         symbols = FALLBACK_SYMBOLS.get(gid, [])
+
     await q.edit_message_text(f"Generating {tf}min charts for {label} ...")
     try:
         bufs: List = await chart_service.generate_chart(symbols, timeframe=tf)
         if not bufs:
             await q.edit_message_text("No charts available.")
             return
+        chat_id = q.message.chat_id
         for buf in bufs:
             buf.seek(0)
-            await context.bot.send_photo(chat_id=q.message.chat_id, photo=buf)
+            await context.bot.send_photo(chat_id=chat_id, photo=buf)
         with suppress(Exception):
             await q.edit_message_text(f"Charts for {label} sent.")
     except Exception as e:

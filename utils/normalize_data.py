@@ -3,46 +3,93 @@
 import pandas as pd
 from datetime import datetime
 
+from typing import Dict
+
+# canonical alias mapping (left side: user input normalized -> right side: LiteFinance symbol)
+_ALIAS_MAP: Dict[str, str] = {
+    # Dollar index
+    "DXY": "USDX",
+    "USDX": "USDX",
+
+    # Metals / commodities
+    "XAU": "XAUUSD",
+    "GOLD": "XAUUSD",
+    "XAUUSD": "XAUUSD",
+    "XAG": "XAGUSD",
+    "SILVER": "XAGUSD",
+    "XAGUSD": "XAGUSD",
+
+    # Major FX shorthand -> common LiteFinance tickers
+    "EUR": "EURUSD",
+    "EURUSD": "EURUSD",
+    "GBP": "GBPUSD",
+    "GBPUSD": "GBPUSD",
+    "AUD": "AUDUSD",
+    "AUDUSD": "AUDUSD",
+    "NZD": "NZDUSD",
+    "NZDUSD": "NZDUSD",
+    "CAD": "USDCAD",   # LiteFinance uses USDCAD (USD base)
+    "USD": "USD",      # leave as-is (rare to request alone)
+
+    # JPY and CHF are commonly quoted with USD as base on LiteFinance
+    "JPY": "USDJPY",   # USD/JPY
+    "USDJPY": "USDJPY",
+    "CHF": "USDCHF",   # USD/CHF
+    "USDCHF": "USDCHF",
+
+    # Cryptos common mapping to USD-based LiteFinance instruments
+    "BTC": "BTCUSD",
+    "BTCUSD": "BTCUSD",
+    "ETH": "ETHUSD",
+    "ETHUSD": "ETHUSD",
+    "DOGE": "DOGEUSD",
+    "DOGEUSD": "DOGEUSD",
+    "XRP": "XRPUSD",
+    "XRPUSD": "XRPUSD",
+    "TOTAL": "TOTAL",  # keep as-is if you have an index called TOTAL on your data source
+
+    # Indices / futures shorthand -> LiteFinance naming
+    "SPX": "SPX",      # check your group definitions; leave as-is if the exchange uses SPX
+    "NQ": "NQ",
+    "YM": "YM",
+}
+
 
 def normalize_symbol(symbol: str) -> str:
     """
     Normalize trading symbol for API requests.
-    - Removes spaces and slashes
-    - Converts to uppercase
-    - Maps known aliases (DXY -> USDX, BTC -> BTCUSD, etc.)
+
+    - strip whitespace and slashes, uppercase
+    - map common short aliases to LiteFinance instrument codes via ALIAS_MAP
+    - if a symbol already looks like an instrument (endswith USD, or is USDX) we
+      return it (after uppercasing)
     """
     if not symbol:
         return ""
 
-    s = symbol.replace(" ", "").replace("/", "").upper()
+    s = symbol.strip().upper().replace(" ", "").replace("/", "")
 
-    alias_map = {
-        # Dollar index — LiteFinance expects USDX in many setups
-        "DXY": "USDX",
-        "USDX": "USDX",
+    # quick pass: if symbol already ends with USD or is USDX or TOTAL, keep it
+    if s.endswith("USD") or s in {"USDX", "TOTAL"} or s in _ALIAS_MAP.values():
+        return s
 
-        # Short names -> provider symbols
-        "BTC": "BTCUSD",
-        "ETH": "ETHUSD",
-        "XAU": "XAU",    # keep as-is unless your provider needs XAUUSD
-        "XAG": "XAG",
-        "TOTAL": "TOTAL",  # adjust if your provider uses a different id
+    # explicit alias lookup (handles XAU, XAG, DXY, BTC, etc.)
+    if s in _ALIAS_MAP:
+        return _ALIAS_MAP[s]
 
-        # allow common pair forms
-        "EURUSD": "EURUSD",
-        "EUR": "EURUSD",
-        "GBPUSD": "GBPUSD",
-        "GBP": "GBPUSD",
-        "CHF": "CHF",
-        "JPY": "JPY",
-        "AUD": "AUD",
-        "NZD": "NZD",
-        "SPX": "SPX",
-        "NQ": "NQ",
-        "YM": "YM",
-    }
+    # last-resort heuristics:
+    # - If it's three letters and matches a common currency code, map to <code>USD
+    #   (EUR -> EURUSD, GBP -> GBPUSD, AUD -> AUDUSD), except CHF/JPY handled above.
+    if len(s) == 3 and s.isalpha():
+        # list where base is the currency itself (EUR, GBP, AUD, NZD)
+        base_pairs = {"EUR", "GBP", "AUD", "NZD"}
+        if s in base_pairs:
+            return f"{s}USD"
+        # currencies where USD is base (JPY, CHF) already covered; for others fallback:
+        return f"{s}USD"
 
-    return alias_map.get(s, s)
+    # fallback: return uppercase cleaned symbol unchanged
+    return s
 
 
 def normalize_timeframe(tf) -> str:

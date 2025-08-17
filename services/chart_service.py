@@ -143,9 +143,12 @@ def _set_xaxis_labels_in_local_tz(ax, df_index: pd.DatetimeIndex, local_tz_offse
 
 async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.BytesIO]:
     """
-    Generate candlestick charts for a list of symbols with quarter vertical lines
-    (quarters defined as 01:30, 07:30, 13:30, 19:30 local -> UTC+3:30), display x-axis labels
-    in UTC+3:30 and add quarter labels (Q1..Q4) between the vertical lines.
+    Generate candlestick charts for a list of symbols with:
+      - SSMT quarter vertical lines (01:30,07:30,13:30,19:30 local -> UTC+3:30)
+      - Quarter labels (Q1..Q4)
+      - HORIZONTAL LINES: previous-quarter HIGH and LOW starting at the actual candle
+        where the high/low happened (within the previous quarter) and ending at the
+        end of the next quarter interval.
     """
     chart_buffers: List[io.BytesIO] = []
     to_date = int(time.time())
@@ -194,87 +197,67 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
             if not filtered_boundaries:
                 logger.debug("[ChartService] No quarter boundaries in range for %s", norm_symbol)
 
-            # Map boundaries to nearest row positions (numeric positions mplfinance often uses)
-            v_indices: List[float] = []
+            # ---- ALWAYS plot WITHOUT passing vlines to mplfinance ----
+            fig, axes = mpf.plot(
+                df,
+                type="candle",
+                style="yahoo",
+                ylabel="Price",
+                figsize=(18, 9),
+                volume=False,
+                returnfig=True
+            )
+
+            main_ax = _get_main_ax_from_mpf_axes(axes)
+
+            # Collect Rectangle artists that represent candle bodies to compute exact centers (if possible)
+            rects = []
+            for child in main_ax.get_children():
+                if isinstance(child, mpatches.Rectangle):
+                    try:
+                        bbox = child.get_bbox()
+                        w = float(bbox.width)
+                        h = float(bbox.height)
+                    except Exception:
+                        continue
+                    # heuristics to identify candle bodies vs large background rect
+                    if w > 0 and abs(h) > 0 and bbox.width < 1000:
+                        rects.append(child)
+
+            x_centers = []
+            used_x_centers = None
+            if rects:
+                rects_sorted = sorted(rects, key=lambda r: r.get_x())
+                x_centers = [r.get_x() + r.get_width() / 2.0 for r in rects_sorted]
+                used_x_centers = x_centers
+
+            # Map boundaries -> nearest row positions (numeric positions mplfinance often uses)
+            boundary_row_positions: List[float] = []
             for b in filtered_boundaries:
                 try:
                     pos = df.index.get_indexer([pd.Timestamp(b)], method="nearest")[0]
                     if pos == -1:
                         continue
-                    v_indices.append(float(pos))
+                    boundary_row_positions.append(float(pos))
                 except Exception as ex:
                     logger.debug("Failed to map boundary %r to row index: %s", b, ex)
 
-            vlines_payload = dict(v=v_indices, linewidths=0.8, colors='C1', linestyle='--', alpha=0.8) if v_indices else None
+            # --- draw vertical lines at boundaries (manual; uses row positions / centers) ---
+            for idx, b in enumerate(filtered_boundaries):
+                try:
+                    pos = df.index.get_indexer([pd.Timestamp(b)], method="nearest")[0]
+                    if pos == -1:
+                        continue
+                    if used_x_centers and pos < len(used_x_centers):
+                        xcoord = used_x_centers[pos]
+                        main_ax.axvline(x=xcoord, linestyle="--", linewidth=0.8, alpha=0.8, color="C1")
+                    else:
+                        main_ax.axvline(x=float(pos), linestyle="--", linewidth=0.8, alpha=0.8, color="C1")
+                except Exception as inner_ex:
+                    logger.debug("Failed to draw vline for %r: %s", b, inner_ex)
 
-            # Try mpf.plot with vlines first
-            used_x_centers = None  # if we detect exact candle centers, populate this list
-            try:
-                fig, axes = mpf.plot(
-                    df,
-                    type="candle",
-                    style="yahoo",
-                    ylabel="Price",
-                    figsize=(18, 9),
-                    volume=False,
-                    vlines=vlines_payload,
-                    returnfig=True
-                )
-            except Exception as e_v:
-                # Fallback — plot normally and draw lines at exact candle centers
-                logger.info("[ChartService] vlines approach failed for %s: %s. Falling back to exact-candle-centers approach.", norm_symbol, e_v)
-                fig, axes = mpf.plot(
-                    df,
-                    type="candle",
-                    style="yahoo",
-                    ylabel="Price",
-                    figsize=(18, 9),
-                    volume=False,
-                    returnfig=True
-                )
-
-                main_ax = _get_main_ax_from_mpf_axes(axes)
-
-                # Collect Rectangle artists that represent candle bodies.
-                rects = []
-                for child in main_ax.get_children():
-                    if isinstance(child, mpatches.Rectangle):
-                        try:
-                            bbox = child.get_bbox()
-                            w = float(bbox.width)
-                            h = float(bbox.height)
-                        except Exception:
-                            continue
-                        # heuristics to identify candle bodies vs large background rect
-                        if w > 0 and abs(h) > 0 and bbox.width < 1000:
-                            rects.append(child)
-
-                x_centers = []
-                if rects:
-                    rects_sorted = sorted(rects, key=lambda r: r.get_x())
-                    x_centers = [r.get_x() + r.get_width() / 2.0 for r in rects_sorted]
-                    used_x_centers = x_centers  # store for label placement
-
-                # Draw vertical lines: prefer exact candle center if available else numeric row pos
-                for b in filtered_boundaries:
-                    try:
-                        pos = df.index.get_indexer([pd.Timestamp(b)], method="nearest")[0]
-                        if pos == -1:
-                            continue
-                        if x_centers and pos < len(x_centers):
-                            xcoord = x_centers[pos]
-                            main_ax.axvline(x=xcoord, linestyle="--", linewidth=0.8, alpha=0.8)
-                        else:
-                            main_ax.axvline(x=float(pos), linestyle="--", linewidth=0.8, alpha=0.8)
-                    except Exception as inner_ex:
-                        logger.debug("Failed to draw exact-candle vline for %r: %s", b, inner_ex)
-
-            # If mpf.plot succeeded with vlines, axes is available and main_ax can be extracted
-            main_ax = _get_main_ax_from_mpf_axes(axes)
-
-            # Build x coordinates for each filtered_boundary to place labels (use exact centers if detected)
+            # Build x coordinates for each filtered_boundary to place labels and to be used for horizontal spans
             x_coords_for_boundaries: List[float] = []
-            # If we have used_x_centers from fallback, use them; otherwise fallback to numeric positions
             for b in filtered_boundaries:
                 try:
                     pos = df.index.get_indexer([pd.Timestamp(b)], method="nearest")[0]
@@ -283,15 +266,153 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                     if used_x_centers and pos < len(used_x_centers):
                         x_coords_for_boundaries.append(used_x_centers[pos])
                     else:
-                        # numeric row position
                         x_coords_for_boundaries.append(float(pos))
                 except Exception as ex:
                     logger.debug("Failed to compute x coord for boundary %r: %s", b, ex)
 
+            # -----------------------------
+            # Compute interval HIGH/LOW for each quarter interval
+            # interval i is between filtered_boundaries[i] and filtered_boundaries[i+1]
+            # then draw HIGH/LOW of interval i starting at the actual candle where the high/low happened
+            # and ending at the end (right boundary) of the next interval (i+1 -> boundary i+2).
+            # -----------------------------
+            def _col_choice(df_obj, *candidates):
+                for c in candidates:
+                    if c in df_obj.columns:
+                        return c
+                for c in candidates:
+                    lc = c.lower()
+                    if lc in df_obj.columns:
+                        return lc
+                return None
+
+            high_col = _col_choice(df, "High", "high")
+            low_col = _col_choice(df, "Low", "low")
+            if high_col is None or low_col is None:
+                logger.debug("[ChartService] High/Low columns not found for %s; skipping horizontal SSMT lines", norm_symbol)
+            else:
+                interval_highs = []
+                interval_lows = []
+                interval_high_ts = []  # actual timestamp where high occurred in interval
+                interval_low_ts = []   # actual timestamp where low occurred in interval
+
+                # compute highs/lows and the exact timestamp of those highs/lows for each interval
+                for i in range(len(filtered_boundaries) - 1):
+                    start_b = filtered_boundaries[i]
+                    end_b = filtered_boundaries[i + 1]
+                    try:
+                        mask = (df.index >= pd.Timestamp(start_b)) & (df.index < pd.Timestamp(end_b))
+                        segment = df.loc[mask]
+                        if segment.empty:
+                            interval_highs.append(None)
+                            interval_lows.append(None)
+                            interval_high_ts.append(None)
+                            interval_low_ts.append(None)
+                        else:
+                            h = segment[high_col].max()
+                            l = segment[low_col].min()
+                            interval_highs.append(h if pd.notna(h) else None)
+                            interval_lows.append(l if pd.notna(l) else None)
+
+                            # timestamp(s) where high / low occur — choose first occurrence
+                            try:
+                                high_idx = segment[segment[high_col] == h].index
+                                if len(high_idx):
+                                    interval_high_ts.append(high_idx[0])
+                                else:
+                                    interval_high_ts.append(segment.index[segment[high_col].argmax()])
+                            except Exception:
+                                # fallback: idxmax
+                                try:
+                                    interval_high_ts.append(segment[high_col].idxmax())
+                                except Exception:
+                                    interval_high_ts.append(None)
+
+                            try:
+                                low_idx = segment[segment[low_col] == l].index
+                                if len(low_idx):
+                                    interval_low_ts.append(low_idx[0])
+                                else:
+                                    interval_low_ts.append(segment.index[segment[low_col].argmin()])
+                            except Exception:
+                                try:
+                                    interval_low_ts.append(segment[low_col].idxmin())
+                                except Exception:
+                                    interval_low_ts.append(None)
+                    except Exception as ex:
+                        logger.debug("Failed to compute high/low for interval %r-%r: %s", start_b, end_b, ex)
+                        interval_highs.append(None)
+                        interval_lows.append(None)
+                        interval_high_ts.append(None)
+                        interval_low_ts.append(None)
+
+                # now draw each previous interval's high/low starting from the actual candle timestamp
+                # across the next interval (i -> i+1 requires boundaries i..i+2)
+                for i in range(len(filtered_boundaries) - 2):
+                    prev_h = interval_highs[i]
+                    prev_l = interval_lows[i]
+                    prev_h_ts = interval_high_ts[i]
+                    prev_l_ts = interval_low_ts[i]
+                    if prev_h is None and prev_l is None:
+                        continue
+
+                    # determine x_end = right boundary of next interval (boundary i+2)
+                    try:
+                        xend = x_coords_for_boundaries[i + 2]
+                    except Exception:
+                        # fallback: numeric pos of boundary i+2
+                        try:
+                            pos_end = df.index.get_indexer([pd.Timestamp(filtered_boundaries[i + 2])], method="nearest")[0]
+                            xend = float(pos_end)
+                        except Exception:
+                            continue
+
+                    # determine x_start: actual candle center for the prev-quarter high/low timestamp
+                    def _timestamp_to_x(ts_val):
+                        if ts_val is None:
+                            return None
+                        try:
+                            # map timestamp to nearest row position
+                            pos = df.index.get_indexer([pd.Timestamp(ts_val)], method="nearest")[0]
+                            if pos == -1:
+                                return None
+                            if used_x_centers and pos < len(used_x_centers):
+                                return used_x_centers[pos]
+                            return float(pos)
+                        except Exception:
+                            return None
+
+                    xstart_h = _timestamp_to_x(prev_h_ts)
+                    xstart_l = _timestamp_to_x(prev_l_ts)
+
+                    # if no valid start coordinate, try to use the left boundary of prev interval as fallback
+                    if xstart_h is None and prev_h is not None:
+                        try:
+                            pos_left = df.index.get_indexer([pd.Timestamp(filtered_boundaries[i])], method="nearest")[0]
+                            xstart_h = used_x_centers[pos_left] if (used_x_centers and pos_left < len(used_x_centers)) else float(pos_left)
+                        except Exception:
+                            xstart_h = None
+
+                    if xstart_l is None and prev_l is not None:
+                        try:
+                            pos_left = df.index.get_indexer([pd.Timestamp(filtered_boundaries[i])], method="nearest")[0]
+                            xstart_l = used_x_centers[pos_left] if (used_x_centers and pos_left < len(used_x_centers)) else float(pos_left)
+                        except Exception:
+                            xstart_l = None
+
+                    # draw horizontal lines from the actual high/low candle to the end of next interval
+                    try:
+                        if prev_h is not None and xstart_h is not None:
+                            main_ax.hlines(y=float(prev_h), xmin=xstart_h, xmax=xend,
+                                           linewidth=0.9, colors="C2", linestyle="-", alpha=0.9, zorder=2)
+                        if prev_l is not None and xstart_l is not None:
+                            main_ax.hlines(y=float(prev_l), xmin=xstart_l, xmax=xend,
+                                           linewidth=0.9, colors="C3", linestyle="-", alpha=0.9, zorder=2)
+                    except Exception as ex:
+                        logger.debug("Failed to draw horizontal prev-quarter lines for %s interval %d: %s", norm_symbol, i, ex)
+
             # Draw quarter labels centered between consecutive boundary x coordinates.
-            # Labels repeat Q1..Q4 for each group of 5 boundaries (4 intervals).
             if x_coords_for_boundaries and len(x_coords_for_boundaries) >= 2:
-                # compute axis y coordinate to place labels (near top)
                 try:
                     y_min, y_max = main_ax.get_ylim()
                     y_for_label = y_max - (y_max - y_min) * 0.03  # 3% from top
@@ -310,7 +431,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
 
                     try:
                         if y_for_label is None:
-                            # If we couldn't compute y, place at axis top in axis coordinates
                             main_ax.text(x_label, 0.98, qname,
                                          transform=main_ax.get_xaxis_transform(),
                                          ha="center", va="top", fontsize=9,
@@ -328,12 +448,13 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
             except Exception as ex:
                 logger.debug("Failed to set x-axis labels in local tz for %s: %s", norm_symbol, ex)
 
-            # Custom title styling
+            # Custom title styling and save
             if fig is not None:
                 fig.suptitle(f"{norm_symbol} - {timeframe}min", fontsize=12, color="gray", alpha=0.6)
 
                 # improve layout so labels don't get cut off
-                fig.tight_layout(rect=[0, 0, 1, 0.96])
+                with suppress(Exception):
+                    fig.tight_layout(rect=[0, 0, 1, 0.96])
 
                 buf = io.BytesIO()
                 fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
