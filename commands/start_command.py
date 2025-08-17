@@ -1,3 +1,5 @@
+# commands/start_command.py
+
 from telegram import Update
 from telegram.ext import ContextTypes
 from keyboards.main_menu import get_main_menu

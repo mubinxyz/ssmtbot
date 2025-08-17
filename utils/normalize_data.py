@@ -9,16 +9,40 @@ def normalize_symbol(symbol: str) -> str:
     Normalize trading symbol for API requests.
     - Removes spaces and slashes
     - Converts to uppercase
-
-    Args:
-        symbol (str): raw symbol like "eurusd", "EUR/USD", "eur usd"
-
-    Returns:
-        str: normalized symbol (e.g., "EURUSD")
+    - Maps known aliases (DXY -> USDX, BTC -> BTCUSD, etc.)
     """
     if not symbol:
         return ""
-    return symbol.replace(" ", "").replace("/", "").upper()
+
+    s = symbol.replace(" ", "").replace("/", "").upper()
+
+    alias_map = {
+        # Dollar index — LiteFinance expects USDX in many setups
+        "DXY": "USDX",
+        "USDX": "USDX",
+
+        # Short names -> provider symbols
+        "BTC": "BTCUSD",
+        "ETH": "ETHUSD",
+        "XAU": "XAU",    # keep as-is unless your provider needs XAUUSD
+        "XAG": "XAG",
+        "TOTAL": "TOTAL",  # adjust if your provider uses a different id
+
+        # allow common pair forms
+        "EURUSD": "EURUSD",
+        "EUR": "EURUSD",
+        "GBPUSD": "GBPUSD",
+        "GBP": "GBPUSD",
+        "CHF": "CHF",
+        "JPY": "JPY",
+        "AUD": "AUD",
+        "NZD": "NZD",
+        "SPX": "SPX",
+        "NQ": "NQ",
+        "YM": "YM",
+    }
+
+    return alias_map.get(s, s)
 
 
 def normalize_timeframe(tf) -> str:
