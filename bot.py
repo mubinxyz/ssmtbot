@@ -3,6 +3,9 @@ import logging
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 from config import BOT_TOKEN, LOG_LEVEL
 
+# db
+from services.db_service import init_db
+
 # command
 from commands.start_command import start_command
 from commands.start_command import back_to_main_handler
@@ -126,6 +129,8 @@ async def action_dispatcher(update, context):
 
 
 def main():
+    init_db()  # Create tables if not exist
+    
     app = Application.builder().token(BOT_TOKEN).build()
 
     # commands

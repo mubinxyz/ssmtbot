@@ -2,12 +2,15 @@
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+from models.user import get_or_create_user
 
 
 def get_main_menu() -> InlineKeyboardMarkup:
     """
     Returns the main menu inline keyboard with market categories and an Alerts entry.
+    
     """
+    
     buttons = [
         [InlineKeyboardButton("📊 FOREX CURRENCIES", callback_data="menu_forex")],
         [InlineKeyboardButton("📈 FUTURES (STOCKS)", callback_data="menu_futures")],
@@ -24,6 +27,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """
     Handles the /start command and sends the main menu with inline keyboard options.
     """
+    user_data = get_or_create_user(
+        chat_id=update.message.chat.id,
+        username=update.message.from_user.username,
+        first_name=update.message.from_user.first_name,
+        last_name=update.message.from_user.last_name
+    )
+    
     user = update.effective_user
     welcome_text = (
         f"👋 Hello {user.first_name or 'Trader'}!\n\n"
