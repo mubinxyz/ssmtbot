@@ -35,3 +35,23 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         text=welcome_text,
         reply_markup=get_main_menu()
     )
+
+
+async def back_to_main_handler(update, context) -> None:
+    """
+    Handles the back to main menu callback query.
+    """
+    query = update.callback_query
+    await query.answer()
+    
+    user = update.effective_user
+    welcome_text = (
+        f"👋 Hello {user.first_name or 'Trader'}!\n\n"
+        "Welcome to your market analysis bot.\n"
+        "Please choose a category to begin:"
+    )
+    
+    await query.edit_message_text(
+        text=welcome_text,
+        reply_markup=get_main_menu()
+    )

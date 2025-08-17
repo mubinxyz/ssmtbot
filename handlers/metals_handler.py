@@ -30,8 +30,8 @@ TIMEFRAMES = [5, 15, 60, 240]
 def _menu_kb() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton("DXY / XAU / XAG / AUD", callback_data="dxy_xau_xag_aud")],
-        [InlineKeyboardButton("XAU / XAG / AUD", callback_data="xau_xag_aud")],
-        [InlineKeyboardButton("DXY / XAU / AUD", callback_data="dxy_xau_aud")],
+        # [InlineKeyboardButton("XAU / XAG / AUD", callback_data="xau_xag_aud")],
+        # [InlineKeyboardButton("DXY / XAU / AUD", callback_data="dxy_xau_aud")],
         [InlineKeyboardButton("🔙 Back", callback_data="back_to_main")],
     ]
     return InlineKeyboardMarkup(buttons)

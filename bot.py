@@ -5,6 +5,7 @@ from config import BOT_TOKEN, LOG_LEVEL
 
 # command
 from commands.start_command import start_command
+from commands.start_command import back_to_main_handler
 
 # forex
 from handlers.forex_handler import (
@@ -50,16 +51,14 @@ from handlers.metals_handler import (
     GROUP_ID_SET as METALS_GROUPS,
 )
 
-# # alerts & navigation
-# from handlers.alerts_handler import (
-#     menu_alerts_handler,
-#     alerts_one_symbol_handler,
-#     alerts_trio_handler,
-#     trio_group_list_all_handler,
-#     manage_active_trio_handler,
-#     manage_active_trio_view_handler,
-#     manage_active_trio_deactivate_handler,
-# )
+# alerts
+from handlers.alerts_handler import (
+    alerts_menu_handler,
+    delete_alert_handler,
+    view_alert_handler,
+    ssmt_alerts_handler,
+    single_symbol_alerts_handler,
+)
 
 # logging
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=LOG_LEVEL)
@@ -131,14 +130,20 @@ def main():
 
     # commands
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CallbackQueryHandler(back_to_main_handler, pattern="^back_to_main$"))
 
     # main menus
     app.add_handler(CallbackQueryHandler(forex_menu_handler, pattern="^menu_forex$"))
     app.add_handler(CallbackQueryHandler(futures_menu_handler, pattern="^menu_futures$"))
     app.add_handler(CallbackQueryHandler(crypto_usd_menu_handler, pattern="^menu_crypto_usd$"))
     app.add_handler(CallbackQueryHandler(metals_menu_handler, pattern="^menu_metals$"))
-    # app.add_handler(CallbackQueryHandler(menu_alerts_handler, pattern="^menu_alerts$"))
+    app.add_handler(CallbackQueryHandler(alerts_menu_handler, pattern="^menu_alerts$"))
 
+    # alerts handlers
+    app.add_handler(CallbackQueryHandler(delete_alert_handler, pattern="^delete_alert::"))
+    app.add_handler(CallbackQueryHandler(view_alert_handler, pattern="^view_alert::"))
+    app.add_handler(CallbackQueryHandler(ssmt_alerts_handler, pattern="^ssmt_alerts$"))
+    app.add_handler(CallbackQueryHandler(single_symbol_alerts_handler, pattern="^single_symbol_alerts$"))
 
     # group selection
     app.add_handler(CallbackQueryHandler(forex_group_select, pattern="^(dxy_eu_gu|dxy_chf_jpy|dxy_aud_nzd)$"))
@@ -154,14 +159,6 @@ def main():
 
     # single action dispatcher (charts/activate/deactivate)
     app.add_handler(CallbackQueryHandler(action_dispatcher, pattern=r"^(charts|activate|deactivate)::"))
-
-    # # alerts handlers
-    # app.add_handler(CallbackQueryHandler(alerts_one_symbol_handler, pattern="^alerts_one_symbol$"))
-    # app.add_handler(CallbackQueryHandler(alerts_trio_handler, pattern="^alerts_trio$"))
-    # app.add_handler(CallbackQueryHandler(trio_group_list_all_handler, pattern="^trio_group_list_all$"))
-    # app.add_handler(CallbackQueryHandler(manage_active_trio_handler, pattern=r"^manage_active_trio::"))
-    # app.add_handler(CallbackQueryHandler(manage_active_trio_view_handler, pattern=r"^manage_active_trio_view::"))
-    # app.add_handler(CallbackQueryHandler(manage_active_trio_deactivate_handler, pattern=r"^manage_active_trio_deactivate::"))
 
     logger.info("🤖 Bot is running...")
     app.run_polling()
