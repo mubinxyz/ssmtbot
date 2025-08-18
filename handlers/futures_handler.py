@@ -29,8 +29,8 @@ TIMEFRAMES = [5, 15, 60, 240]
 def _menu_kb() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton("S&P500 (SPX) / NASDAQ (NQ) / DOW (YM)", callback_data="spx_nq_ym")],
-        [InlineKeyboardButton("ES / NQ / DOW", callback_data="es_nq_dow")],
-        [InlineKeyboardButton("SPX / DOW / NQ", callback_data="spx_dow_nq")],
+        # [InlineKeyboardButton("ES / NQ / DOW", callback_data="es_nq_dow")],
+        # [InlineKeyboardButton("SPX / DOW / NQ", callback_data="spx_dow_nq")],
         [InlineKeyboardButton("🔙 Back", callback_data="back_to_main")],
     ]
     return InlineKeyboardMarkup(buttons)

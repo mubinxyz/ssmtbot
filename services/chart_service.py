@@ -653,50 +653,103 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 logger.debug("[ChartService] Open column not found for %s; skipping true-open lines", norm_symbol)
             else:
                 n_bounds = len(good_boundaries)
-                if n_bounds >= 5:
-                    for start in range(0, n_bounds - 4):
-                        window_q = boundary_quarter_idx[start:start + 4]
-                        if len(window_q) < 4:
-                            continue
-                        if window_q == [0, 1, 2, 3]:
-                            open_ts = interval_open_ts[start + 1]
-                            open_price = None
-                            xstart = None
-                            if open_ts is not None:
-                                try:
-                                    pos_open = df.index.get_indexer([pd.Timestamp(open_ts)], method="nearest")[0]
-                                    if pos_open != -1 and pos_open < len(df):
-                                        open_price = df.iloc[pos_open][open_col]
-                                        xstart = (used_x_centers[pos_open] if (used_x_centers and pos_open < len(used_x_centers)) else float(pos_open))
-                                except Exception:
-                                    open_price = None
-                                    xstart = None
+                # Modified logic: draw trueopen line even if quarters are incomplete
+                # Find the last complete 4-quarter sequence or use the last available quarters
+                if n_bounds >= 2:  # Need at least 2 boundaries to draw any line
+                    # Determine how many complete 4-quarter sequences we have
+                    complete_sequences = max(0, n_bounds - 4)
+                    
+                    # If we have at least one complete sequence, draw all of them
+                    if complete_sequences > 0:
+                        for start in range(0, complete_sequences + 1):
+                            window_q = boundary_quarter_idx[start:start + 4]
+                            if len(window_q) < 4:
+                                continue
+                            if window_q == [0, 1, 2, 3]:
+                                open_ts = interval_open_ts[start + 1]
+                                open_price = None
+                                xstart = None
+                                if open_ts is not None:
+                                    try:
+                                        pos_open = df.index.get_indexer([pd.Timestamp(open_ts)], method="nearest")[0]
+                                        if pos_open != -1 and pos_open < len(df):
+                                            open_price = df.iloc[pos_open][open_col]
+                                            xstart = (used_x_centers[pos_open] if (used_x_centers and pos_open < len(used_x_centers)) else float(pos_open))
+                                    except Exception:
+                                        open_price = None
+                                        xstart = None
 
-                            if open_price is None or xstart is None:
+                                if open_price is None or xstart is None:
+                                    try:
+                                        pos_left = df.index.get_indexer([pd.Timestamp(good_boundaries[start + 1])], method="nearest")[0]
+                                        if pos_left != -1 and pos_left < len(df):
+                                            open_price = df.iloc[pos_left][open_col]
+                                            xstart = (used_x_centers[pos_left] if (used_x_centers and pos_left < len(used_x_centers)) else float(pos_left))
+                                    except Exception:
+                                        continue
+
                                 try:
-                                    pos_left = df.index.get_indexer([pd.Timestamp(good_boundaries[start + 1])], method="nearest")[0]
-                                    if pos_left != -1 and pos_left < len(df):
-                                        open_price = df.iloc[pos_left][open_col]
-                                        xstart = (used_x_centers[pos_left] if (used_x_centers and pos_left < len(used_x_centers)) else float(pos_left))
+                                    xend = x_coords_for_boundaries[start + 4]
                                 except Exception:
+                                    try:
+                                        pos_end = df.index.get_indexer([pd.Timestamp(good_boundaries[start + 4])], method="nearest")[0]
+                                        xend = (used_x_centers[pos_end] if (used_x_centers and pos_end < len(used_x_centers)) else float(pos_end))
+                                    except Exception:
+                                        xend = None
+
+                                if xend is None or xstart is None or open_price is None:
                                     continue
 
-                            try:
-                                xend = x_coords_for_boundaries[start + 4]
-                            except Exception:
                                 try:
-                                    pos_end = df.index.get_indexer([pd.Timestamp(good_boundaries[start + 4])], method="nearest")[0]
-                                    xend = (used_x_centers[pos_end] if (used_x_centers and pos_end < len(used_x_centers)) else float(pos_end))
-                                except Exception:
-                                    xend = None
+                                    main_ax.hlines(y=float(open_price), xmin=xstart, xmax=xend, linewidth=1.0, colors=TRUEOPEN_COLOR, linestyle=TRUEOPEN_STYLE, alpha=0.95, zorder=2)
+                                except Exception as ex:
+                                    logger.debug("Failed to draw true-open for %s window starting at %d: %s", norm_symbol, start, ex)
+                    
+                    # Even if we don't have complete sequences, extend the last trueopen line to last-1 candle
+                    # Find the most recent valid trueopen line
+                    if n_bounds >= 5:  # Standard case with complete sequences
+                        pass  # Already handled above
+                    else:  # Incomplete case - extend the last available trueopen
+                        # Find the last possible trueopen start (need at least 2 boundaries after start)
+                        for start in range(max(0, n_bounds - 5), -1, -1):
+                            if start + 2 < n_bounds:  # Need at least start+2 to have a meaningful line
+                                # Get the open price from the start+1 boundary
+                                open_ts = interval_open_ts[start + 1]
+                                open_price = None
+                                xstart = None
+                                
+                                if open_ts is not None:
+                                    try:
+                                        pos_open = df.index.get_indexer([pd.Timestamp(open_ts)], method="nearest")[0]
+                                        if pos_open != -1 and pos_open < len(df):
+                                            open_price = df.iloc[pos_open][open_col]
+                                            xstart = (used_x_centers[pos_open] if (used_x_centers and pos_open < len(used_x_centers)) else float(pos_open))
+                                    except Exception:
+                                        open_price = None
+                                        xstart = None
 
-                            if xend is None or xstart is None or open_price is None:
-                                continue
+                                if open_price is None or xstart is None:
+                                    try:
+                                        pos_left = df.index.get_indexer([pd.Timestamp(good_boundaries[start + 1])], method="nearest")[0]
+                                        if pos_left != -1 and pos_left < len(df):
+                                            open_price = df.iloc[pos_left][open_col]
+                                            xstart = (used_x_centers[pos_left] if (used_x_centers and pos_left < len(used_x_centers)) else float(pos_left))
+                                    except Exception:
+                                        continue
 
-                            try:
-                                main_ax.hlines(y=float(open_price), xmin=xstart, xmax=xend, linewidth=1.0, colors=TRUEOPEN_COLOR, linestyle=TRUEOPEN_STYLE, alpha=0.95, zorder=2)
-                            except Exception as ex:
-                                logger.debug("Failed to draw true-open for %s window starting at %d: %s", norm_symbol, start, ex)
+                                # Extend to the last - 1 candle
+                                if len(df) >= 2 and xstart is not None and open_price is not None:
+                                    # Use the x-coordinate of the second-to-last candle
+                                    last_minus_one_pos = len(df) - 2
+                                    xend = (used_x_centers[last_minus_one_pos] if (used_x_centers and last_minus_one_pos < len(used_x_centers)) else float(last_minus_one_pos))
+                                    
+                                    try:
+                                        main_ax.hlines(y=float(open_price), xmin=xstart, xmax=xend, linewidth=1.0, colors=TRUEOPEN_COLOR, linestyle=TRUEOPEN_STYLE, alpha=0.95, zorder=2)
+                                        logger.debug("Extended trueopen line for %s from boundary %d to last-1 candle", norm_symbol, start)
+                                        break  # Only draw the most recent one
+                                    except Exception as ex:
+                                        logger.debug("Failed to draw extended true-open for %s: %s", norm_symbol, ex)
+                                        break
 
             if x_coords_for_boundaries and len(x_coords_for_boundaries) >= 2:
                 try:
@@ -727,8 +780,11 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
 
             if fig is not None:
                 fig.suptitle(f"{norm_symbol} - {timeframe}min", fontsize=12, color="gray", alpha=0.6)
-                with suppress(Exception):
-                    fig.tight_layout(rect=[0, 0, 1, 0.96])
+                # Use subplots_adjust instead of tight_layout to avoid warnings
+                try:
+                    fig.subplots_adjust(top=0.94, bottom=0.1, left=0.05, right=0.95, hspace=0.2, wspace=0.2)
+                except Exception:
+                    pass
                 buf = io.BytesIO()
                 fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
                 buf.seek(0)

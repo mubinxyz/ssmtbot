@@ -1,0 +1,67 @@
+{
+  "1001::FOREX CURRENCIES::dxy_eu_gu::15": {
+    "user_id": 1001,
+    "category": "FOREX CURRENCIES",
+    "group_id": "dxy_eu_gu",
+    "timeframe_min": 15,
+    "active": false,
+    "created_at": "2025-08-17T11:20:01.995415Z"
+  },
+  "6090394677::FOREX CURRENCIES::dxy_eu_gu::240": {
+    "user_id": 6090394677,
+    "category": "FOREX CURRENCIES",
+    "group_id": "dxy_eu_gu",
+    "timeframe_min": 240,
+    "active": true,
+    "created_at": "2025-08-17T19:20:53.020107Z"
+  },
+  "6090394677::FOREX CURRENCIES::btc_eth_xrp::5": {
+    "user_id": 6090394677,
+    "category": "FOREX CURRENCIES",
+    "group_id": "btc_eth_xrp",
+    "timeframe_min": 5,
+    "active": true,
+    "created_at": "2025-08-17T21:32:24.567673+00:00Z"
+  },
+  "6090394677::FOREX CURRENCIES::dxy_xau_xag_aud::5": {
+    "user_id": 6090394677,
+    "category": "FOREX CURRENCIES",
+    "group_id": "dxy_xau_xag_aud",
+    "timeframe_min": 5,
+    "active": true,
+    "created_at": "2025-08-17T21:32:49.743740+00:00Z"
+  },
+  "6090394677::FOREX CURRENCIES::btc_eth_xrp::60": {
+    "user_id": 6090394677,
+    "category": "FOREX CURRENCIES",
+    "group_id": "btc_eth_xrp",
+    "timeframe_min": 60,
+    "active": true,
+    "created_at": "2025-08-17T22:27:06.257916+00:00Z"
+  },
+  "6090394677::FOREX CURRENCIES::dxy_xau_xag_aud::15": {
+    "user_id": 6090394677,
+    "category": "FOREX CURRENCIES",
+    "group_id": "dxy_xau_xag_aud",
+    "timeframe_min": 15,
+    "active": true,
+    "created_at": "2025-08-17T22:27:19.550541+00:00Z"
+  },
+  "6090394677::FOREX CURRENCIES::dxy_eu_gu::5": {
+    "user_id": 6090394677,
+    "category": "FOREX CURRENCIES",
+    "group_id": "dxy_eu_gu",
+    "timeframe_min": 5,
+    "active": true,
+    "created_at": "2025-08-17T23:41:08.800341+00:00Z"
+  },
+  "6090394677::FOREX CURRENCIES::btc_eth_xrp::15": {
+    "user_id": 6090394677,
+    "category": "FOREX CURRENCIES",
+    "group_id": "btc_eth_xrp",
+    "timeframe_min": 15,
+    "active": true,
+    "created_at": "2025-08-18T07:21:35.728907+00:00Z",
+    "updated_at": "2025-08-18T07:39:01.436189+00:00Z"
+  }
+}
