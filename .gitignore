@@ -3,3 +3,6 @@ tests
 __pycache__
 alerts_store.json
 database.db
+
+alerts_store.json.backup
+triggered_alerts_with_charts.json

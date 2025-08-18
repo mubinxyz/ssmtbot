@@ -15,6 +15,11 @@ from dateutil import tz as dateutil_tz
 from utils.get_data import get_ohlc
 from utils.normalize_data import normalize_symbol
 
+# ===== Add these 2 lines at the top, before any matplotlib.pyplot import =====
+import matplotlib
+matplotlib.use("Agg")   # use non-GUI backend so Tkinter is never involved
+# ==========================================================================
+
 logger = logging.getLogger("services.chart_service")
 logging.basicConfig(level=logging.INFO)
 
