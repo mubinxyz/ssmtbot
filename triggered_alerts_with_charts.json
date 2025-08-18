@@ -5598,5 +5598,480 @@
         "generated": true
       }
     ]
+  },
+  {
+    "timestamp": "2025-08-18T12:44:21.832374+00:00Z",
+    "alert_key": "6090394677::FOREX CURRENCIES::dxy_eu_gu::60",
+    "alert_details": {
+      "user_id": 6090394677,
+      "category": "FOREX CURRENCIES",
+      "group_id": "dxy_eu_gu",
+      "timeframe_min": 60,
+      "active": true,
+      "created_at": "2025-08-18T12:35:35.699067+00:00Z"
+    },
+    "message": "\u26a0\ufe0f Alert Triggered (dxy_eu_gu, 60m)!\nGroup Type: reverse_moving\nQuarter Pair: Q1/Q2\nUSDX broke Q1 high (97.89000) in Q2 (97.93000), while at least one other held their Q1 low.",
+    "charts": [
+      {
+        "symbol": "USDX",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "EURUSD",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "GBPUSD",
+        "timeframe": 60,
+        "generated": true
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-08-18T12:47:06.441251+00:00Z",
+    "alert_key": "6090394677::FOREX CURRENCIES::dxy_xau_xag_aud::60",
+    "alert_details": {
+      "user_id": 6090394677,
+      "category": "FOREX CURRENCIES",
+      "group_id": "dxy_xau_xag_aud",
+      "timeframe_min": 60,
+      "active": true,
+      "created_at": "2025-08-18T10:16:52.069453+00:00Z"
+    },
+    "message": "\u26a0\ufe0f Alert Triggered (dxy_xau_xag_aud, 60m)!\nGroup Type: reverse_moving\nQuarter Pair: Q1/Q2\nUSDX broke Q1 high (97.89000) in Q2 (97.93000), while at least one other held their Q1 low.",
+    "charts": [
+      {
+        "symbol": "USDX",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "XAU",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "XAG",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "AUD",
+        "timeframe": 60,
+        "generated": true
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-08-18T12:47:11.989562+00:00Z",
+    "alert_key": "6090394677::FOREX CURRENCIES::spx_nq_ym::60",
+    "alert_details": {
+      "user_id": 6090394677,
+      "category": "FOREX CURRENCIES",
+      "group_id": "spx_nq_ym",
+      "timeframe_min": 60,
+      "active": true,
+      "created_at": "2025-08-18T10:59:41.990346+00:00Z"
+    },
+    "message": "\u26a0\ufe0f Alert Triggered (spx_nq_ym, 60m)!\nGroup Type: move_together\nQuarter Pair: Q1/Q2\nSPX broke Q1 low (6440.50000) in Q2 (6440.30000), but not all others followed.",
+    "charts": [
+      {
+        "symbol": "SPX",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "NQ",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "YM",
+        "timeframe": 60,
+        "generated": true
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-08-18T12:47:17.327002+00:00Z",
+    "alert_key": "6090394677::FOREX CURRENCIES::dxy_eu_gu::60",
+    "alert_details": {
+      "user_id": 6090394677,
+      "category": "FOREX CURRENCIES",
+      "group_id": "dxy_eu_gu",
+      "timeframe_min": 60,
+      "active": true,
+      "created_at": "2025-08-18T12:35:35.699067+00:00Z"
+    },
+    "message": "\u26a0\ufe0f Alert Triggered (dxy_eu_gu, 60m)!\nGroup Type: reverse_moving\nQuarter Pair: Q1/Q2\nUSDX broke Q1 high (97.89000) in Q2 (97.93000), while at least one other held their Q1 low.",
+    "charts": [
+      {
+        "symbol": "USDX",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "EURUSD",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "GBPUSD",
+        "timeframe": 60,
+        "generated": true
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-08-18T12:48:09.568687+00:00Z",
+    "alert_key": "6090394677::FOREX CURRENCIES::spx_nq_ym::60",
+    "alert_details": {
+      "user_id": 6090394677,
+      "category": "FOREX CURRENCIES",
+      "group_id": "spx_nq_ym",
+      "timeframe_min": 60,
+      "active": true,
+      "created_at": "2025-08-18T10:59:41.990346+00:00Z"
+    },
+    "message": "\u26a0\ufe0f Alert Triggered (spx_nq_ym, 60m)!\nGroup Type: move_together\nQuarter Pair: Q1/Q2\nSPX broke Q1 low (6440.50000) in Q2 (6440.30000), but not all others followed.",
+    "charts": [
+      {
+        "symbol": "SPX",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "NQ",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "YM",
+        "timeframe": 60,
+        "generated": true
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-08-18T12:48:15.665769+00:00Z",
+    "alert_key": "6090394677::FOREX CURRENCIES::dxy_eu_gu::60",
+    "alert_details": {
+      "user_id": 6090394677,
+      "category": "FOREX CURRENCIES",
+      "group_id": "dxy_eu_gu",
+      "timeframe_min": 60,
+      "active": true,
+      "created_at": "2025-08-18T12:35:35.699067+00:00Z"
+    },
+    "message": "\u26a0\ufe0f Alert Triggered (dxy_eu_gu, 60m)!\nGroup Type: reverse_moving\nQuarter Pair: Q1/Q2\nUSDX broke Q1 high (97.89000) in Q2 (97.93000), while at least one other held their Q1 low.",
+    "charts": [
+      {
+        "symbol": "USDX",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "EURUSD",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "GBPUSD",
+        "timeframe": 60,
+        "generated": true
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-08-18T12:55:05.126099+00:00Z",
+    "alert_key": "6090394677::FOREX CURRENCIES::dxy_xau_xag_aud::60",
+    "alert_details": {
+      "user_id": 6090394677,
+      "category": "FOREX CURRENCIES",
+      "group_id": "dxy_xau_xag_aud",
+      "timeframe_min": 60,
+      "active": true,
+      "created_at": "2025-08-18T10:16:52.069453+00:00Z"
+    },
+    "message": "\u26a0\ufe0f Alert Triggered (dxy_xau_xag_aud, 60m)!\nGroup Type: reverse_moving\nQuarter Pair: Q1/Q2\nUSDX broke Q1 high (97.89000) in Q2 (97.93000), while at least one other held their Q1 low.",
+    "charts": [
+      {
+        "symbol": "USDX",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "XAU",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "XAG",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "AUD",
+        "timeframe": 60,
+        "generated": true
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-08-18T12:55:15.050904+00:00Z",
+    "alert_key": "6090394677::FOREX CURRENCIES::spx_nq_ym::60",
+    "alert_details": {
+      "user_id": 6090394677,
+      "category": "FOREX CURRENCIES",
+      "group_id": "spx_nq_ym",
+      "timeframe_min": 60,
+      "active": true,
+      "created_at": "2025-08-18T10:59:41.990346+00:00Z"
+    },
+    "message": "\u26a0\ufe0f Alert Triggered (spx_nq_ym, 60m)!\nGroup Type: move_together\nQuarter Pair: Q1/Q2\nSPX broke Q1 low (6440.50000) in Q2 (6440.30000), but not all others followed.",
+    "charts": [
+      {
+        "symbol": "SPX",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "NQ",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "YM",
+        "timeframe": 60,
+        "generated": true
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-08-18T12:55:24.842148+00:00Z",
+    "alert_key": "6090394677::FOREX CURRENCIES::dxy_eu_gu::60",
+    "alert_details": {
+      "user_id": 6090394677,
+      "category": "FOREX CURRENCIES",
+      "group_id": "dxy_eu_gu",
+      "timeframe_min": 60,
+      "active": true,
+      "created_at": "2025-08-18T12:35:35.699067+00:00Z"
+    },
+    "message": "\u26a0\ufe0f Alert Triggered (dxy_eu_gu, 60m)!\nGroup Type: reverse_moving\nQuarter Pair: Q1/Q2\nUSDX broke Q1 high (97.89000) in Q2 (97.93000), while at least one other held their Q1 low.",
+    "charts": [
+      {
+        "symbol": "USDX",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "EURUSD",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "GBPUSD",
+        "timeframe": 60,
+        "generated": true
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-08-18T12:56:56.792075+00:00Z",
+    "alert_key": "6090394677::FOREX CURRENCIES::dxy_xau_xag_aud::60",
+    "alert_details": {
+      "user_id": 6090394677,
+      "category": "FOREX CURRENCIES",
+      "group_id": "dxy_xau_xag_aud",
+      "timeframe_min": 60,
+      "active": true,
+      "created_at": "2025-08-18T10:16:52.069453+00:00Z"
+    },
+    "message": "\u26a0\ufe0f Alert Triggered (dxy_xau_xag_aud, 60m)!\nGroup Type: reverse_moving\nQuarter Pair: Q1/Q2\nUSDX broke Q1 high (97.89000) in Q2 (97.93000), while at least one other held their Q1 low.",
+    "charts": [
+      {
+        "symbol": "USDX",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "XAU",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "XAG",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "AUD",
+        "timeframe": 60,
+        "generated": true
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-08-18T12:57:06.803713+00:00Z",
+    "alert_key": "6090394677::FOREX CURRENCIES::spx_nq_ym::60",
+    "alert_details": {
+      "user_id": 6090394677,
+      "category": "FOREX CURRENCIES",
+      "group_id": "spx_nq_ym",
+      "timeframe_min": 60,
+      "active": true,
+      "created_at": "2025-08-18T10:59:41.990346+00:00Z"
+    },
+    "message": "\u26a0\ufe0f Alert Triggered (spx_nq_ym, 60m)!\nGroup Type: move_together\nQuarter Pair: Q1/Q2\nSPX broke Q1 low (6440.50000) in Q2 (6440.30000), but not all others followed.",
+    "charts": [
+      {
+        "symbol": "SPX",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "NQ",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "YM",
+        "timeframe": 60,
+        "generated": true
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-08-18T12:57:17.082974+00:00Z",
+    "alert_key": "6090394677::FOREX CURRENCIES::dxy_eu_gu::60",
+    "alert_details": {
+      "user_id": 6090394677,
+      "category": "FOREX CURRENCIES",
+      "group_id": "dxy_eu_gu",
+      "timeframe_min": 60,
+      "active": true,
+      "created_at": "2025-08-18T12:35:35.699067+00:00Z"
+    },
+    "message": "\u26a0\ufe0f Alert Triggered (dxy_eu_gu, 60m)!\nGroup Type: reverse_moving\nQuarter Pair: Q1/Q2\nUSDX broke Q1 high (97.89000) in Q2 (97.93000), while at least one other held their Q1 low.",
+    "charts": [
+      {
+        "symbol": "USDX",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "EURUSD",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "GBPUSD",
+        "timeframe": 60,
+        "generated": true
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-08-18T12:57:55.568972+00:00Z",
+    "alert_key": "6090394677::FOREX CURRENCIES::dxy_xau_xag_aud::60",
+    "alert_details": {
+      "user_id": 6090394677,
+      "category": "FOREX CURRENCIES",
+      "group_id": "dxy_xau_xag_aud",
+      "timeframe_min": 60,
+      "active": true,
+      "created_at": "2025-08-18T10:16:52.069453+00:00Z"
+    },
+    "message": "\u26a0\ufe0f Alert Triggered (dxy_xau_xag_aud, 60m)!\nGroup Type: reverse_moving\nQuarter Pair: Q1/Q2\nUSDX broke Q1 high (97.89000) in Q2 (97.93000), while at least one other held their Q1 low.",
+    "charts": [
+      {
+        "symbol": "USDX",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "XAU",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "XAG",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "AUD",
+        "timeframe": 60,
+        "generated": true
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-08-18T12:58:33.317156+00:00Z",
+    "alert_key": "6090394677::FOREX CURRENCIES::dxy_xau_xag_aud::60",
+    "alert_details": {
+      "user_id": 6090394677,
+      "category": "FOREX CURRENCIES",
+      "group_id": "dxy_xau_xag_aud",
+      "timeframe_min": 60,
+      "active": true,
+      "created_at": "2025-08-18T10:16:52.069453+00:00Z"
+    },
+    "message": "\u26a0\ufe0f Alert Triggered (dxy_xau_xag_aud, 60m)!\nGroup Type: reverse_moving\nQuarter Pair: Q1/Q2\nUSDX broke Q1 high (97.89000) in Q2 (97.93000), while at least one other held their Q1 low.",
+    "charts": [
+      {
+        "symbol": "USDX",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "XAU",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "XAG",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "AUD",
+        "timeframe": 60,
+        "generated": true
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-08-18T12:58:45.450690+00:00Z",
+    "alert_key": "6090394677::FOREX CURRENCIES::dxy_eu_gu::60",
+    "alert_details": {
+      "user_id": 6090394677,
+      "category": "FOREX CURRENCIES",
+      "group_id": "dxy_eu_gu",
+      "timeframe_min": 60,
+      "active": true,
+      "created_at": "2025-08-18T12:35:35.699067+00:00Z"
+    },
+    "message": "\u26a0\ufe0f Alert Triggered (dxy_eu_gu, 60m)!\nGroup Type: reverse_moving\nQuarter Pair: Q1/Q2\nUSDX broke Q1 high (97.89000) in Q2 (97.93000), while at least one other held their Q1 low.",
+    "charts": [
+      {
+        "symbol": "USDX",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "EURUSD",
+        "timeframe": 60,
+        "generated": true
+      },
+      {
+        "symbol": "GBPUSD",
+        "timeframe": 60,
+        "generated": true
+      }
+    ]
   }
 ]
