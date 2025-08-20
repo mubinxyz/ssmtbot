@@ -1,3 +1,5 @@
+# handlers/alerts_handler.py
+
 import logging
 import json
 import os
@@ -58,23 +60,53 @@ def _alerts_menu_kb(user_id) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
-def _build_alerts_list_and_kb(user_id, context) -> (str, InlineKeyboardMarkup):
+def _get_user_display_name(user) -> str:
+    """Return a readable display name for a Telegram user."""
+    # guard against None or missing attributes
+    if not user:
+        return "Unknown"
+    username = getattr(user, "username", None)
+    first_name = getattr(user, "first_name", None)
+    last_name = getattr(user, "last_name", None)
+    user_id = getattr(user, "id", None)
+
+    if username:
+        return f"@{username}"
+    elif first_name and last_name:
+        return f"{first_name} {last_name}"
+    elif first_name:
+        return first_name
+    elif user_id is not None:
+        return str(user_id)
+    else:
+        return "Unknown"
+
+
+def _build_alerts_list_and_kb(user, context) -> (str, InlineKeyboardMarkup):
     """Build the textual list of alerts and an inline keyboard with delete buttons.
 
     Because Telegram callback_data is limited in size, we create a short integer id per
     alert and store a mapping in context.user_data['alerts_map'] so delete callbacks can
     reference alerts safely.
+
+    Accepts a telegram.User object for display purposes.
     """
+    user_id = getattr(user, "id", None)
     user_alerts = _get_user_alerts(user_id)
+    # ensure map is empty by default
+    context.user_data['alerts_map'] = {}
+
     if not user_alerts:
-        text = "🔔 Trio/Four Alerts Management\n\n📭 You have no alerts registered."
+        display_name = _get_user_display_name(user)
+        text = "🔔 Trio/Four Alerts Management\n\n"
+        text += f"👤 User: {display_name}\n\n"
+        text += "📭 You have no alerts registered."
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Alerts Menu", callback_data="menu_alerts")]])
-        # ensure map is empty
-        context.user_data['alerts_map'] = {}
         return text, kb
 
     lines = ["🔔 Trio/Four Alerts Management\n"]
-    lines.append(f"👤 User ID: {user_id}\n")
+    display_name = _get_user_display_name(user)
+    lines.append(f"👤 User: {display_name}\n")
 
     # We'll list alerts as numbered items
     alerts_map = {}
@@ -133,8 +165,8 @@ async def show_alerts_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
 
-    user_id = update.effective_user.id
-    text, kb = _build_alerts_list_and_kb(user_id, context)
+    user = update.effective_user
+    text, kb = _build_alerts_list_and_kb(user, context)
 
     await query.edit_message_text(
         text=text,
@@ -151,7 +183,8 @@ async def delete_alert_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
 
-    user_id = update.effective_user.id
+    user = update.effective_user
+    user_id = user.id
     data = query.data or ""
 
     if not data.startswith("delete_alert::"):
@@ -195,7 +228,7 @@ async def delete_alert_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     # Rebuild the list and keyboard (this will also refresh the mapping)
-    text, kb = _build_alerts_list_and_kb(user_id, context)
+    text, kb = _build_alerts_list_and_kb(user, context)
 
     confirmation_text = "✅ Alert deleted.\n\n" + text
 
@@ -213,9 +246,7 @@ async def single_symbol_alerts_handler(update: Update, context: ContextTypes.DEF
 
     await query.edit_message_text(
         text="🔹 Single Symbol Alerts\n\n🚧 Coming Soon!\n\nStay tuned for individual symbol alert functionality.",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("⬅️ Back to Alerts", callback_data="menu_alerts")
-        ]])
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Alerts", callback_data="menu_alerts")]])
     )
 
 
@@ -227,9 +258,7 @@ async def view_alert_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await query.edit_message_text(
         text="This function has been updated. Group alerts are displayed on the trio alerts page.",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("⬅️ Back to Trio Alerts", callback_data="show_alerts")
-        ]])
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Trio Alerts", callback_data="show_alerts")]])
     )
 
 
