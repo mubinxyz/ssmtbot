@@ -26,8 +26,8 @@ logging.basicConfig(level=logging.INFO)
 # ---------- CONFIG ----------
 SOURCE_TZ = dateutil_tz.tzoffset(None, 3 * 3600)   # provider = UTC+3
 LOCAL_TZ_NAME = "Asia/Tehran"
-LOCAL_OFFSET_MINUTES = 210                         # fallback +3:30
-NEAR_TOLERANCE_HOURS = 3                           # fallback tolerance used to decide "nearby" candle
+LOCAL_OFFSET_MINUTES = 210                 # fallback +3:30
+NEAR_TOLERANCE_HOURS = 3                   # fallback tolerance used to decide "nearby" candle
 QUARTER_COLORS = ["C2", "C3", "C4", "C5"]
 TRUEOPEN_COLOR = "C6"
 TRUEOPEN_STYLE = "--"
@@ -212,10 +212,8 @@ def _hour_boundaries_utc_for_index(index: pd.DatetimeIndex,
     # Expand range to ensure we capture all boundaries
     start_local = idx_local.min() - pd.Timedelta(days=7)
     end_local = idx_local.max() + pd.Timedelta(days=7)
-    
     # Generate all dates in the range
     dates = pd.date_range(start=start_local.normalize(), end=end_local.normalize(), freq="D", tz=idx_local.tz)
-    
     boundaries_utc = []
     # Only consider Monday through Thursday
     for date in dates:
@@ -228,7 +226,6 @@ def _hour_boundaries_utc_for_index(index: pd.DatetimeIndex,
             except Exception:
                 local_dt = dt.datetime(year=date.year, month=date.month, day=date.day, tzinfo=date.tzinfo)
                 boundaries_utc.append(pd.Timestamp(local_dt).tz_convert("UTC"))
-    
     boundaries_utc = sorted(list(dict.fromkeys(boundaries_utc)))
     return boundaries_utc
 
@@ -258,11 +255,9 @@ def _day_boundaries_utc_for_index(index: pd.DatetimeIndex,
     # Expand range to ensure we capture all boundaries
     start_local = idx_local.min() - pd.Timedelta(days=30)
     end_local = idx_local.max() + pd.Timedelta(days=30)
-    
     # Generate week boundaries (start of each week, Monday)
     boundaries_utc = []
     current = start_local.normalize()
-    
     while current <= end_local:
         # If this is a Monday, it's a week boundary
         if current.weekday() == 0:  # Monday
@@ -273,7 +268,6 @@ def _day_boundaries_utc_for_index(index: pd.DatetimeIndex,
                 local_dt = dt.datetime(year=current.year, month=current.month, day=current.day, tzinfo=current.tzinfo)
                 boundaries_utc.append(pd.Timestamp(local_dt).tz_convert("UTC"))
         current += pd.Timedelta(days=1)
-    
     boundaries_utc = sorted(list(dict.fromkeys(boundaries_utc)))
     return boundaries_utc
 
@@ -374,8 +368,8 @@ def _quarter_index_from_boundary(boundary_utc: pd.Timestamp, tz_name: str = LOCA
 
 
 def _set_xaxis_labels_in_local_tz(ax, df_index: pd.DatetimeIndex,
-                                  local_tz_offset_minutes: int = LOCAL_OFFSET_MINUTES,
-                                  fmt: str = "%b %d %H:%M", tz_name: str = LOCAL_TZ_NAME):
+                                 local_tz_offset_minutes: int = LOCAL_OFFSET_MINUTES,
+                                 fmt: str = "%b %d %H:%M", tz_name: str = LOCAL_TZ_NAME):
     """
     Robustly set x-axis labels converting ticks to local tz (Asia/Tehran).
     Priority:
@@ -424,15 +418,15 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
     # Set time range based on timeframe
     to_date = int(time.time())
     if timeframe == 5:
-        from_date = to_date - 1 * 24 * 60 * 60  # last 24 hours
+        from_date = to_date - 0.5 * 24 * 60 * 60  
     elif timeframe == 15:
-        from_date = to_date - 3 * 24 * 60 * 60  # last 3 days
+        from_date = to_date - 1.5 * 24 * 60 * 60  
     elif timeframe == 60:
-        from_date = to_date - 7 * 24 * 60 * 60  # last week
+        from_date = to_date - 5 * 24 * 60 * 60  
     elif timeframe == 240:
-        from_date = to_date - 80 * 24 * 60 * 60  # last 80 days
+        from_date = to_date - 32 * 24 * 60 * 60  
     else:
-        from_date = to_date - 3 * 24 * 60 * 60  # default to 3 days
+        from_date = to_date - 3 * 24 * 60 * 60  
 
     # choose tolerance per timeframe: much smaller for 5m because boundaries are 90min apart
     if timeframe == 5:
@@ -554,6 +548,7 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
             interval_low_ts = []
             interval_open_ts = []
 
+            # intervals correspond to pairs of consecutive good_boundaries: [b0->b1, b1->b2, ...]
             for i in range(max(0, len(good_boundaries) - 1)):
                 start_b = good_boundaries[i]
                 end_b = good_boundaries[i + 1]
@@ -602,22 +597,48 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
             # Pre-compute quarter index for each good boundary based on timeframe
             boundary_quarter_idx = [_quarter_index_from_boundary(b, tz_name=LOCAL_TZ_NAME, timeframe=timeframe) for b in good_boundaries]
 
-            for i in range(max(0, len(good_boundaries) - 2)):
-                prev_h = interval_highs[i]
-                prev_l = interval_lows[i]
-                prev_h_ts = interval_high_ts[i]
-                prev_l_ts = interval_low_ts[i]
-                q_idx = boundary_quarter_idx[i] if i < len(boundary_quarter_idx) else (i % 4)
+            # --- FIXED: iterate all intervals and extend to last-1 candle if next boundary not available ---
+            # Determine coordinate for last-1 candle (candle -1)
+            last_minus_one_pos = (len(df) - 2) if len(df) >= 2 else None
+            last_minus_one_x = None
+            if last_minus_one_pos is not None:
+                if used_x_centers and last_minus_one_pos < len(used_x_centers):
+                    last_minus_one_x = used_x_centers[last_minus_one_pos]
+                else:
+                    last_minus_one_x = float(last_minus_one_pos)
+
+            # interval_count = number of computed intervals
+            interval_count = len(interval_highs)
+
+            for j in range(interval_count):
+                prev_h = interval_highs[j]
+                prev_l = interval_lows[j]
+                prev_h_ts = interval_high_ts[j]
+                prev_l_ts = interval_low_ts[j]
+                q_idx = boundary_quarter_idx[j] if j < len(boundary_quarter_idx) else (j % 4)
                 q_color = QUARTER_COLORS[q_idx % 4]
 
+                # Attempt to compute xend: prefer the boundary 2 ahead (original behavior),
+                # but if it's not available (new quarter not formed), fall back to last-1 candle.
+                xend = None
                 try:
-                    xend = x_coords_for_boundaries[i + 2]
+                    if (j + 2) < len(x_coords_for_boundaries):
+                        xend = x_coords_for_boundaries[j + 2]
+                    else:
+                        # fallback to nearest-pos of good_boundaries[j+2] if present but not in x_coords_for_boundaries
+                        try:
+                            pos_end = df.index.get_indexer([pd.Timestamp(good_boundaries[j + 2])], method="nearest")[0]
+                            if pos_end != -1:
+                                xend = (used_x_centers[pos_end] if (used_x_centers and pos_end < len(used_x_centers)) else float(pos_end))
+                        except Exception:
+                            xend = None
                 except Exception:
-                    try:
-                        pos_end = df.index.get_indexer([pd.Timestamp(good_boundaries[i + 2])], method="nearest")[0]
-                        xend = (used_x_centers[pos_end] if (used_x_centers and pos_end < len(used_x_centers)) else float(pos_end))
-                    except Exception:
-                        xend = None
+                    xend = None
+
+                # If still no xend and there are fewer than expected boundaries (i.e. new quarter not formed),
+                # extend to last-1 candle as requested.
+                if xend is None:
+                    xend = last_minus_one_x
 
                 def _ts_to_x(ts_val):
                     if ts_val is None:
@@ -635,24 +656,26 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
 
                 if xstart_h is None and prev_h is not None:
                     try:
-                        pos_left = df.index.get_indexer([pd.Timestamp(good_boundaries[i])], method="nearest")[0]
+                        pos_left = df.index.get_indexer([pd.Timestamp(good_boundaries[j])], method="nearest")[0]
                         xstart_h = (used_x_centers[pos_left] if (used_x_centers and pos_left < len(used_x_centers)) else float(pos_left))
                     except Exception:
                         xstart_h = None
                 if xstart_l is None and prev_l is not None:
                     try:
-                        pos_left = df.index.get_indexer([pd.Timestamp(good_boundaries[i])], method="nearest")[0]
+                        pos_left = df.index.get_indexer([pd.Timestamp(good_boundaries[j])], method="nearest")[0]
                         xstart_l = (used_x_centers[pos_left] if (used_x_centers and pos_left < len(used_x_centers)) else float(pos_left))
                     except Exception:
                         xstart_l = None
 
                 try:
+                    # Only draw if we have necessary coordinates and values
                     if prev_h is not None and xstart_h is not None and xend is not None:
                         main_ax.hlines(y=float(prev_h), xmin=xstart_h, xmax=xend, linewidth=0.9, colors=q_color, linestyle="-", alpha=0.9, zorder=2)
                     if prev_l is not None and xstart_l is not None and xend is not None:
                         main_ax.hlines(y=float(prev_l), xmin=xstart_l, xmax=xend, linewidth=0.9, colors=q_color, linestyle="-", alpha=0.9, zorder=2)
                 except Exception as ex:
-                    logger.debug("Failed to draw prev-quarter HL for %s interval %d: %s", norm_symbol, i, ex)
+                    logger.debug("Failed to draw prev-quarter HL for %s interval %d: %s", norm_symbol, j, ex)
+            # --- end FIX ---
 
             if open_col is None:
                 logger.debug("[ChartService] Open column not found for %s; skipping true-open lines", norm_symbol)
@@ -663,7 +686,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 if n_bounds >= 2:  # Need at least 2 boundaries to draw any line
                     # Determine how many complete 4-quarter sequences we have
                     complete_sequences = max(0, n_bounds - 4)
-                    
                     # If we have at least one complete sequence, draw all of them
                     if complete_sequences > 0:
                         for start in range(0, complete_sequences + 1):
@@ -709,7 +731,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                                     main_ax.hlines(y=float(open_price), xmin=xstart, xmax=xend, linewidth=1.0, colors=TRUEOPEN_COLOR, linestyle=TRUEOPEN_STYLE, alpha=0.95, zorder=2)
                                 except Exception as ex:
                                     logger.debug("Failed to draw true-open for %s window starting at %d: %s", norm_symbol, start, ex)
-                    
                     # Even if we don't have complete sequences, extend the last trueopen line to last-1 candle
                     # Find the most recent valid trueopen line
                     if n_bounds >= 5:  # Standard case with complete sequences
@@ -722,7 +743,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                                 open_ts = interval_open_ts[start + 1]
                                 open_price = None
                                 xstart = None
-                                
                                 if open_ts is not None:
                                     try:
                                         pos_open = df.index.get_indexer([pd.Timestamp(open_ts)], method="nearest")[0]
@@ -747,7 +767,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                                     # Use the x-coordinate of the second-to-last candle
                                     last_minus_one_pos = len(df) - 2
                                     xend = (used_x_centers[last_minus_one_pos] if (used_x_centers and last_minus_one_pos < len(used_x_centers)) else float(last_minus_one_pos))
-                                    
                                     try:
                                         main_ax.hlines(y=float(open_price), xmin=xstart, xmax=xend, linewidth=1.0, colors=TRUEOPEN_COLOR, linestyle=TRUEOPEN_STYLE, alpha=0.95, zorder=2)
                                         logger.debug("Extended trueopen line for %s from boundary %d to last-1 candle", norm_symbol, start)
