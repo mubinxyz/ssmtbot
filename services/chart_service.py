@@ -418,15 +418,15 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
     # Set time range based on timeframe
     to_date = int(time.time())
     if timeframe == 5:
-        from_date = to_date - 0.5 * 24 * 60 * 60  
+        from_date = to_date - 0.3 * 24 * 60 * 60
     elif timeframe == 15:
-        from_date = to_date - 1.5 * 24 * 60 * 60  
+        from_date = to_date - 1.25 * 24 * 60 * 60
     elif timeframe == 60:
-        from_date = to_date - 5 * 24 * 60 * 60  
+        from_date = to_date - 4.5 * 24 * 60 * 60
     elif timeframe == 240:
-        from_date = to_date - 32 * 24 * 60 * 60  
+        from_date = to_date - 30 * 24 * 60 * 60
     else:
-        from_date = to_date - 3 * 24 * 60 * 60  
+        from_date = to_date - 3 * 24 * 60 * 60
 
     # choose tolerance per timeframe: much smaller for 5m because boundaries are 90min apart
     if timeframe == 5:
@@ -731,16 +731,23 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                                     main_ax.hlines(y=float(open_price), xmin=xstart, xmax=xend, linewidth=1.0, colors=TRUEOPEN_COLOR, linestyle=TRUEOPEN_STYLE, alpha=0.95, zorder=2)
                                 except Exception as ex:
                                     logger.debug("Failed to draw true-open for %s window starting at %d: %s", norm_symbol, start, ex)
-                    # Even if we don't have complete sequences, extend the last trueopen line to last-1 candle
-                    # Find the most recent valid trueopen line
-                    if n_bounds >= 5:  # Standard case with complete sequences
-                        pass  # Already handled above
-                    else:  # Incomplete case - extend the last available trueopen
-                        # Find the last possible trueopen start (need at least 2 boundaries after start)
-                        for start in range(max(0, n_bounds - 5), -1, -1):
-                            if start + 2 < n_bounds:  # Need at least start+2 to have a meaningful line
-                                # Get the open price from the start+1 boundary
-                                open_ts = interval_open_ts[start + 1]
+
+                    # --- NEW: extend the most recent incomplete trueopen to last-1 candle if needed ---
+                    # We'll pick the most recent candidate open (the open of the last interval),
+                    # check if the corresponding 4-quarter window is incomplete, and if so draw it to candle -1.
+                    try:
+                        if len(interval_open_ts) > 0:
+                            candidate_interval_idx = len(interval_open_ts) - 1  # index into interval_open_ts
+                            # corresponding start (such that open_ts == interval_open_ts[start+1])
+                            candidate_start = candidate_interval_idx - 1
+                            incomplete_window = True
+                            if candidate_start >= 0:
+                                window_q = boundary_quarter_idx[candidate_start:candidate_start + 4]
+                                if len(window_q) == 4 and window_q == [0, 1, 2, 3]:
+                                    incomplete_window = False
+                            # If candidate_start < 0, we also consider it incomplete (early in data)
+                            if incomplete_window:
+                                open_ts = interval_open_ts[candidate_interval_idx]
                                 open_price = None
                                 xstart = None
                                 if open_ts is not None:
@@ -753,27 +760,25 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                                         open_price = None
                                         xstart = None
 
-                                if open_price is None or xstart is None:
+                                if (open_price is None or xstart is None) and candidate_interval_idx < len(good_boundaries):
+                                    # fallback to boundary position
                                     try:
-                                        pos_left = df.index.get_indexer([pd.Timestamp(good_boundaries[start + 1])], method="nearest")[0]
+                                        pos_left = df.index.get_indexer([pd.Timestamp(good_boundaries[candidate_interval_idx])], method="nearest")[0]
                                         if pos_left != -1 and pos_left < len(df):
                                             open_price = df.iloc[pos_left][open_col]
                                             xstart = (used_x_centers[pos_left] if (used_x_centers and pos_left < len(used_x_centers)) else float(pos_left))
                                     except Exception:
-                                        continue
+                                        pass
 
-                                # Extend to the last - 1 candle
-                                if len(df) >= 2 and xstart is not None and open_price is not None:
-                                    # Use the x-coordinate of the second-to-last candle
-                                    last_minus_one_pos = len(df) - 2
-                                    xend = (used_x_centers[last_minus_one_pos] if (used_x_centers and last_minus_one_pos < len(used_x_centers)) else float(last_minus_one_pos))
+                                if open_price is not None and xstart is not None and last_minus_one_x is not None:
                                     try:
-                                        main_ax.hlines(y=float(open_price), xmin=xstart, xmax=xend, linewidth=1.0, colors=TRUEOPEN_COLOR, linestyle=TRUEOPEN_STYLE, alpha=0.95, zorder=2)
-                                        logger.debug("Extended trueopen line for %s from boundary %d to last-1 candle", norm_symbol, start)
-                                        break  # Only draw the most recent one
+                                        main_ax.hlines(y=float(open_price), xmin=xstart, xmax=last_minus_one_x, linewidth=1.0, colors=TRUEOPEN_COLOR, linestyle=TRUEOPEN_STYLE, alpha=0.95, zorder=2)
+                                        logger.debug("Extended trueopen line for %s from candidate interval %d to last-1 candle", norm_symbol, candidate_interval_idx)
                                     except Exception as ex:
                                         logger.debug("Failed to draw extended true-open for %s: %s", norm_symbol, ex)
-                                        break
+                    except Exception as ex:
+                        logger.debug("True-open extension logic failed for %s: %s", norm_symbol, ex)
+                    # --- end NEW ---
 
             if x_coords_for_boundaries and len(x_coords_for_boundaries) >= 2:
                 try:
