@@ -1,0 +1,66 @@
+[
+  {
+    "timestamp": "2025-08-20T17:28:36.709803+00:00Z",
+    "alert_key": "6090394677::FOREX CURRENCIES::btc_eth_xrp::15",
+    "alert_details": {
+      "user_id": 6090394677,
+      "category": "FOREX CURRENCIES",
+      "group_id": "btc_eth_xrp",
+      "timeframe_min": 15,
+      "active": true,
+      "created_at": "2025-08-18T07:50:03.506678+00:00Z",
+      "updated_at": "2025-08-20T17:18:53.096103+00:00Z",
+      "last_trigger_signature": "bar:1755709200"
+    },
+    "message": "\u26a0\ufe0f Alert Triggered \u2014 Group: btc_eth_xrp (move_together) \u2014 15m\nPrimary: BTCUSD | Q1 end: 2025-08-20 20:45:00 +0330 | Q2 end: 2025-08-20 21:00:00 +0330\nCondition: Primary broke Q1 low (113792.93000 \u2192 113790.00000) in Q2.\nOthers that followed lower: none.\nOthers that DID NOT follow (held or didn't drop below Q1 low): ETHUSD, XRPUSD.\n\nPer-symbol summary:\nBTCUSD: Q1(H/L)=114141.39000/113792.93000, Q2(H/L)=114073.99000/113790.00000\nETHUSD: Q1(H/L)=4330.67000/4299.90000, Q2(H/L)=4324.99000/4304.68000\nXRPUSD: Q1(H/L)=2.93310/2.91320, Q2(H/L)=2.93670/2.92050",
+    "charts": [
+      {
+        "symbol": "BTCUSD",
+        "timeframe": 15,
+        "status": "generated"
+      },
+      {
+        "symbol": "ETHUSD",
+        "timeframe": 15,
+        "status": "generated"
+      },
+      {
+        "symbol": "XRPUSD",
+        "timeframe": 15,
+        "status": "generated"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-08-20T17:28:43.834586+00:00Z",
+    "alert_key": "6090394677::FOREX CURRENCIES::spx_nq_ym::15",
+    "alert_details": {
+      "user_id": 6090394677,
+      "category": "FOREX CURRENCIES",
+      "group_id": "spx_nq_ym",
+      "timeframe_min": 15,
+      "active": true,
+      "created_at": "2025-08-18T08:25:14.507480+00:00Z",
+      "updated_at": "2025-08-20T17:18:59.546135+00:00Z",
+      "last_trigger_signature": "bar:1755704700"
+    },
+    "message": "\u26a0\ufe0f Alert Triggered \u2014 Group: spx_nq_ym (move_together) \u2014 15m\nPrimary: SPX | Q1 end: 2025-08-20 20:45:00 +0330 | Q2 end: 2025-08-20 21:00:00 +0330\nCondition: Primary broke Q1 high (6384.50000 \u2192 6385.30000) in Q2.\nOthers that followed: YM.\nOthers that DID NOT follow (held or didn't exceed Q1 high): NQ.\n\nPer-symbol summary:\nSPX: Q1(H/L)=6384.50000/6376.50000, Q2(H/L)=6385.30000/6375.90000\nNQ: Q1(H/L)=23191.80000/23151.70000, Q2(H/L)=23187.30000/23149.00000\nYM: Q1(H/L)=44913.00000/44856.00000, Q2(H/L)=44917.80000/44847.50000",
+    "charts": [
+      {
+        "symbol": "SPX",
+        "timeframe": 15,
+        "status": "generated"
+      },
+      {
+        "symbol": "NQ",
+        "timeframe": 15,
+        "status": "generated"
+      },
+      {
+        "symbol": "YM",
+        "timeframe": 15,
+        "status": "generated"
+      }
+    ]
+  }
+]
