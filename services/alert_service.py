@@ -1,4 +1,5 @@
 # services/alert_service.py
+
 import json
 import logging
 import os
@@ -19,6 +20,8 @@ from services.notify_user import send_alert_notification
 # --- Configuration ---
 ALERTS_STORE_FILE = "alerts_store.json"
 TRIGGERED_ALERTS_WITH_CHARTS_FILE = "triggered_alerts_with_charts.json"
+CHARTS_OUTPUT_DIR = "charts"  # If you want to persist charts to disk (optional)
+
 TIMEZONE_LITEFINANCE = pytz.timezone('Etc/GMT-3')  # UTC+3
 TIMEZONE_TARGET = pytz.timezone('Asia/Tehran')     # UTC+3:30
 TIMEZONE_UTC = pytz.utc
@@ -36,6 +39,7 @@ logger = logging.getLogger(__name__)
 # --------------------------
 # Alert storage helpers
 # --------------------------
+
 def load_alerts():
     if not os.path.exists(ALERTS_STORE_FILE):
         return {}
@@ -46,12 +50,14 @@ def load_alerts():
         logger.error(f"Error loading alerts from {ALERTS_STORE_FILE}: {e}")
         return {}
 
+
 def save_alerts(alerts):
     try:
         with open(ALERTS_STORE_FILE, 'w') as f:
             json.dump(alerts, f, indent=2)
     except IOError as e:
         logger.error(f"Error saving alerts to {ALERTS_STORE_FILE}: {e}")
+
 
 def load_triggered_alerts_with_charts():
     if not os.path.exists(TRIGGERED_ALERTS_WITH_CHARTS_FILE):
@@ -64,6 +70,7 @@ def load_triggered_alerts_with_charts():
         logger.error(f"Error loading triggered alerts from {TRIGGERED_ALERTS_WITH_CHARTS_FILE}: {e}")
         return []
 
+
 def save_triggered_alert_with_charts(triggered_alert_data):
     all_triggered = load_triggered_alerts_with_charts()
     all_triggered.append(triggered_alert_data)
@@ -73,11 +80,14 @@ def save_triggered_alert_with_charts(triggered_alert_data):
     except IOError as e:
         logger.error(f"Error saving triggered alert to {TRIGGERED_ALERTS_WITH_CHARTS_FILE}: {e}")
 
+
 # --------------------------
 # Alert definitions & groups
 # --------------------------
+
 def _generate_alert_key(user_id, category, group_id, timeframe_min):
     return f"{user_id}::{category}::{group_id}::{timeframe_min}"
+
 
 def set_ssmt_alert(user_id: int, group_id: str, timeframe_min: int, category: str = "FOREX CURRENCIES"):
     alerts = load_alerts()
@@ -97,6 +107,7 @@ def set_ssmt_alert(user_id: int, group_id: str, timeframe_min: int, category: st
     save_alerts(alerts)
     logger.info(f"Alert set/activated for user {user_id}, group {group_id}, timeframe {timeframe_min}min.")
 
+
 def deactivate_ssmt_alert(user_id: int, group_id: str, timeframe_min: int, category: str = "FOREX CURRENCIES") -> bool:
     alerts = load_alerts()
     key = _generate_alert_key(user_id, category, group_id, timeframe_min)
@@ -107,6 +118,7 @@ def deactivate_ssmt_alert(user_id: int, group_id: str, timeframe_min: int, categ
         logger.info(f"Alert deactivated for user {user_id}, group {group_id}, timeframe {timeframe_min}min.")
         return True
     return False
+
 
 def get_active_alerts():
     alerts = load_alerts()
@@ -130,6 +142,7 @@ def find_group(category: str, group_id: str):
 # --------------------------
 # Time conversion & resampling (CPU-bound) - run in threads
 # --------------------------
+
 def _convert_lf_time_to_target(df: pd.DataFrame) -> pd.DataFrame:
     # Same logic as before, keep it sync but we'll call it via to_thread
     if df.empty:
@@ -155,6 +168,7 @@ def _convert_lf_time_to_target(df: pd.DataFrame) -> pd.DataFrame:
         if 'timestamp' not in df.columns:
             df['timestamp'] = pd.Series(dtype='int64')
         return df
+
 
 def _resample_to_alert_timeframe(df_1min_or_5min: pd.DataFrame, alert_timeframe_min: int) -> pd.DataFrame:
     if df_1min_or_5min.empty:
@@ -186,17 +200,18 @@ def _resample_to_alert_timeframe(df_1min_or_5min: pd.DataFrame, alert_timeframe_
     resampled_df.dropna(subset=['open', 'high', 'low', 'close'], inplace=True)
     if 'timestamp' not in resampled_df.columns or resampled_df['timestamp'].isna().all():
          try:
-             resampled_df['timestamp'] = resampled_df['datetime'].dt.tz_convert(TIMEZONE_TARGET).apply(lambda dt: int(dt.timestamp()))
+            resampled_df['timestamp'] = resampled_df['datetime'].dt.tz_convert(TIMEZONE_TARGET).apply(lambda dt: int(dt.timestamp()))
          except Exception as e:
-             logger.error(f"_resample_to_alert_timeframe: recreate timestamp error: {e}")
-             if 'timestamp' not in resampled_df.columns:
-                 resampled_df['timestamp'] = pd.Series(dtype='int64')
+            logger.error(f"_resample_to_alert_timeframe: recreate timestamp error: {e}")
+            if 'timestamp' not in resampled_df.columns:
+                resampled_df['timestamp'] = pd.Series(dtype='int64')
     return resampled_df
 
 
 # --------------------------
 # Async-safe data fetching: run get_ohlc in threads with timeouts & concurrency
 # --------------------------
+
 async def _fetch_symbol_df(symbol: str, data_resolution: int, from_ts: int, to_ts: int, timeout: float) -> Optional[pd.DataFrame]:
     """
     Fetch single symbol in a thread and then convert its times in a thread.
@@ -283,11 +298,12 @@ async def _get_data_for_alert_checking(symbols: list[str], timeframe_min: int) -
 # --------------------------
 # Chart generation (async-safe)
 # --------------------------
+
 async def _generate_charts_for_symbols(symbols: list[str], timeframe_min: int) -> list:
     """
     Attempt to generate charts in a non-blocking way. If generate_chart is async, await it.
     If it's sync, run it in a thread.
-    Returns list of chart-info dictionaries.
+    Returns list of dicts: {"symbol":..., "timeframe":..., "buffer": <bytes or file-like>}
     """
     try:
         if inspect.iscoroutinefunction(generate_chart):
@@ -297,25 +313,28 @@ async def _generate_charts_for_symbols(symbols: list[str], timeframe_min: int) -
         else:
             # blocking; run in a thread
             chart_buffers = await asyncio.wait_for(asyncio.to_thread(generate_chart, symbols, timeframe_min), timeout=_CHART_GENERATION_TIMEOUT)
+
         chart_data_list = []
+        # assume generate_chart returns a list/iterable of buffers (bytes or file-like)
         for i, buf in enumerate(chart_buffers):
             chart_data_list.append({
                 "symbol": symbols[i] if i < len(symbols) else "unknown",
                 "timeframe": timeframe_min,
-                "generated": True
+                "buffer": buf
             })
         return chart_data_list
     except asyncio.TimeoutError:
         logger.warning("_generate_charts_for_symbols: timeout generating charts for %s", symbols)
-        return [{"error": "chart generation timeout"} for _ in symbols]
+        return [{"error": "chart generation timeout", "symbol": symbols[i] if i < len(symbols) else "unknown"} for i in range(len(symbols))]
     except Exception as e:
         logger.exception("_generate_charts_for_symbols: error: %s", e)
-        return [{"error": f"chart generation failed: {e}"} for _ in symbols]
+        return [{"error": f"chart generation failed: {e}", "symbol": symbols[i] if i < len(symbols) else "unknown"} for i in range(len(symbols))]
 
 
 # --------------------------
 # Background task scheduling helpers (safe)
 # --------------------------
+
 def _bg_done_callback(task: asyncio.Task, name: str):
     try:
         exc = task.exception()
@@ -325,6 +344,7 @@ def _bg_done_callback(task: asyncio.Task, name: str):
         logger.warning("Background task '%s' cancelled", name)
     except Exception as e:
         logger.exception("Error inspecting background task '%s': %s", name, e)
+
 
 def _schedule_background_task(coro, name: str):
     try:
@@ -349,6 +369,7 @@ def _schedule_background_task(coro, name: str):
 # --------------------------
 # Quarter logic helpers (same semantics)
 # --------------------------
+
 def _quarter_index_from_boundary(boundary_utc: pd.Timestamp, tz_name: str = "Asia/Tehran", timeframe: int = 15) -> int:
     if boundary_utc is None:
         return 0
@@ -393,6 +414,7 @@ def _quarter_index_from_boundary(boundary_utc: pd.Timestamp, tz_name: str = "Asi
 # --------------------------
 # Quarter pair check logic (keeps OR semantics for reverse_moving)
 # --------------------------
+
 def _check_all_quarter_pairs(data_map: dict, group_id: str, group_type: str, primary_symbol: str, other_symbols: list, timeframe_min: int):
     triggered_alerts = []
     lengths = [len(df) for df in data_map.values()] if data_map else [0]
@@ -422,11 +444,14 @@ def _check_all_quarter_pairs(data_map: dict, group_id: str, group_type: str, pri
         q2_end_time_utc = pd.to_datetime(q2_bar_data['datetime'], utc=True)
     except Exception as e:
         logger.error(f"_check_all_quarter_pairs: Error getting bar end times: {e}", exc_info=True)
+
     triggered_result = _check_single_quarter_pair(
         q1_q2_data, group_id, group_type, primary_symbol, other_symbols,
         timeframe_min, q1_end_time_utc, q2_end_time_utc
     )
+
     if triggered_result[0]:
+        # triggered_result is (True, message, q2_end_time_utc) now
         triggered_alerts.append(triggered_result)
     return triggered_alerts
 
@@ -434,6 +459,9 @@ def _check_all_quarter_pairs(data_map: dict, group_id: str, group_type: str, pri
 def _check_single_quarter_pair(q1_q2_data: dict, group_id: str, group_type: str,
                               primary_symbol: str, other_symbols: list, timeframe_min: int,
                               q1_end_time_utc: pd.Timestamp, q2_end_time_utc: pd.Timestamp):
+    """
+    Returns (is_triggered: bool, message: str|None, q2_end_time_utc: pd.Timestamp|None)
+    """
     try:
         q1_label = "Q1"; q2_label = "Q2"
         q1_high_primary = float(q1_q2_data[primary_symbol]['Q1']['high'])
@@ -454,7 +482,7 @@ def _check_single_quarter_pair(q1_q2_data: dict, group_id: str, group_type: str,
                            f"{primary_symbol} broke {q1_label} high ({q1_high_primary:.5f}) in {q2_label} ({q2_high_primary:.5f}), "
                            f"but not all others followed.")
                     logger.info(f"Triggered: {msg}")
-                    return True, msg, None
+                    return True, msg, q2_end_time_utc
             elif group_type == "reverse_moving":
                 any_other_held_low = False
                 for sym in other_symbols:
@@ -470,7 +498,7 @@ def _check_single_quarter_pair(q1_q2_data: dict, group_id: str, group_type: str,
                            f"{primary_symbol} broke {q1_label} high ({q1_high_primary:.5f}) in {q2_label} ({q2_high_primary:.5f}), "
                            f"while at least one other held their {q1_label} low.")
                     logger.info(f"Triggered: {msg}")
-                    return True, msg, None
+                    return True, msg, q2_end_time_utc
         q1_low_primary = float(q1_q2_data[primary_symbol]['Q1']['low'])
         q2_low_primary = float(q1_q2_data[primary_symbol]['Q2']['low'])
         if q2_low_primary < q1_low_primary:
@@ -489,7 +517,7 @@ def _check_single_quarter_pair(q1_q2_data: dict, group_id: str, group_type: str,
                            f"{primary_symbol} broke {q1_label} low ({q1_low_primary:.5f}) in {q2_label} ({q2_low_primary:.5f}), "
                            f"but not all others followed.")
                     logger.info(f"Triggered: {msg}")
-                    return True, msg, None
+                    return True, msg, q2_end_time_utc
             elif group_type == "reverse_moving":
                 any_other_held_high = False
                 for sym in other_symbols:
@@ -505,7 +533,7 @@ def _check_single_quarter_pair(q1_q2_data: dict, group_id: str, group_type: str,
                            f"{primary_symbol} broke {q1_label} low ({q1_low_primary:.5f}) in {q2_label} ({q2_low_primary:.5f}), "
                            f"while at least one other held their {q1_label} high.")
                     logger.info(f"Triggered: {msg}")
-                    return True, msg, None
+                    return True, msg, q2_end_time_utc
     except (KeyError, ValueError, TypeError) as e:
         logger.error(f"_check_single_quarter_pair: Error processing data for pair: {e}")
     return False, None, None
@@ -514,20 +542,27 @@ def _check_single_quarter_pair(q1_q2_data: dict, group_id: str, group_type: str,
 # --------------------------
 # Background trigger handler (does long work off-loop)
 # --------------------------
+
 async def _handle_trigger_actions(alert_key: str, alert_details: dict, message: str, symbols: list, timeframe_min: int, user_id: int, bot: Optional[object] = None):
     """
     Generate charts, save JSON, and send notifications in background.
+
+    Charts are sent as separate messages: first the textual alert, then one message per chart.
+
     All blocking bits run in thread workers via asyncio.to_thread.
     """
     try:
         chart_data_list = await _generate_charts_for_symbols(symbols, timeframe_min)
+
         triggered_data = {
             "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
             "alert_key": alert_key,
             "alert_details": alert_details,
             "message": message,
-            "charts": chart_data_list
+            # Do not attempt to persist binary buffers into JSON - instead store metadata
+            "charts": [{"symbol": c.get('symbol'), "timeframe": c.get('timeframe'), "status": 'generated' if c.get('buffer') else 'error'} for c in chart_data_list]
         }
+
         # Save triggered alert (file I/O) in thread and with timeout
         try:
             await asyncio.wait_for(asyncio.to_thread(save_triggered_alert_with_charts, triggered_data), timeout=_SAVE_IO_TIMEOUT)
@@ -536,12 +571,24 @@ async def _handle_trigger_actions(alert_key: str, alert_details: dict, message: 
         except Exception as e:
             logger.exception("_handle_trigger_actions: save triggered alert error: %s", e)
 
-        # Send notification: pass the bot if provided so the app's bot is reused
+        # Send textual notification first
         try:
-            # send_alert_notification already handles whether send is blocking vs async and accepts bot param
-            await send_alert_notification(user_id, message, chart_data_list, bot=bot)
+            # send only the text in the first message
+            await send_alert_notification(user_id, message, [], bot=bot)
         except Exception as e:
-            logger.exception("_handle_trigger_actions: notifying user failed: %s", e)
+            logger.exception("_handle_trigger_actions: notifying user (message) failed: %s", e)
+
+        # Then send each chart in a separate message (if the send_alert_notification supports receiving a single chart buffer in the list)
+        for chart_info in chart_data_list:
+            try:
+                buf = chart_info.get('buffer')
+                sym = chart_info.get('symbol')
+                tf = chart_info.get('timeframe')
+                caption = f"Chart: {sym} {tf}m"
+                # send the chart as a separate message; we pass a single-item list containing the buffer
+                await send_alert_notification(user_id, caption, [buf] if buf is not None else [], bot=bot)
+            except Exception as e:
+                logger.exception("_handle_trigger_actions: sending chart for %s failed: %s", chart_info.get('symbol'), e)
     except Exception as e:
         logger.exception("_handle_trigger_actions: unexpected error: %s", e)
 
@@ -549,11 +596,16 @@ async def _handle_trigger_actions(alert_key: str, alert_details: dict, message: 
 # --------------------------
 # Main check function (async; accepts optional bot)
 # --------------------------
+
 async def check_alert_conditions(alert_key: str, alert_details: dict, bot: Optional[object] = None):
     """
     Returns (is_triggered: bool, message: str|None, chart_data_list: list|None)
+
     This function itself tries to be fast: heavy work (charting/sending/saving) is delegated
     to background tasks by calling _schedule_background_task on _handle_trigger_actions.
+
+    To avoid repeated alerts for the same bar/condition we store a "last_trigger_signature"
+    on the alert and only trigger again when the signature changes (e.g. new q2 bar time).
     """
     user_id = alert_details.get('user_id')
     group_id = alert_details.get('group_id')
@@ -573,12 +625,29 @@ async def check_alert_conditions(alert_key: str, alert_details: dict, bot: Optio
 
     logger.info(f"Checking alert {alert_key} for group {group_id} ({group_type}) with symbols {symbols}")
 
+    # Helper to check & update the last trigger signature to avoid duplicates
+    def _should_trigger_and_mark(signature: str) -> bool:
+        alerts = load_alerts()
+        alert = alerts.get(alert_key, {})
+        last_sig = alert.get('last_trigger_signature')
+        if last_sig == signature:
+            logger.info(f"Skipping trigger for {alert_key}: same signature {signature}")
+            return False
+        # mark now (persist immediately) so concurrent checks won't double-send
+        alert['last_trigger_signature'] = signature
+        alert['updated_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
+        alerts[alert_key] = alert
+        save_alerts(alerts)
+        return True
+
+    # 5m special windows (reuse existing behavior)
     if timeframe_min == 5:
         now_target = datetime.now(TIMEZONE_TARGET)
         today = now_target.date()
         def _localized(h, m): return TIMEZONE_TARGET.localize(datetime.combine(today, datetime.min.time().replace(hour=h, minute=m)))
         start_time_1 = _localized(1, 30); end_time_1 = _localized(7, 30)
         start_time_2 = _localized(7, 30); end_time_2 = _localized(13, 30)
+        triggered_results = []
         if start_time_1 <= now_target < end_time_1:
             triggered_results = await _process_5m_window(alert_details, symbols, group_id, group_type, user_id, timeframe_min, 1, bot)
         elif start_time_2 <= now_target < end_time_2:
@@ -586,9 +655,17 @@ async def check_alert_conditions(alert_key: str, alert_details: dict, bot: Optio
         else:
             logger.info("Outside 5m alert windows, no processing")
             return False, None, None
-        if triggered_results:
-            # triggered_results items are (True, message, None) because we schedule background tasks
-            return triggered_results[0]
+
+        # triggered_results items are (True, message, signature)
+        for (is_triggered, message, signature) in triggered_results:
+            if is_triggered and message:
+                sig = signature or f"msghash:{hash(message)}"
+                if _should_trigger_and_mark(sig):
+                    bg_name = f"trigger_handler::{alert_key}"
+                    _schedule_background_task(_handle_trigger_actions(alert_key, alert_details, message, symbols, timeframe_min, user_id, bot=bot), bg_name)
+                    return True, message, None
+                else:
+                    return False, None, None
         return False, None, None
 
     # For other timeframes: fetch data asynchronously
@@ -636,19 +713,23 @@ async def check_alert_conditions(alert_key: str, alert_details: dict, bot: Optio
         data_map, group_id, group_type, primary_symbol, other_symbols, timeframe_min
     )
 
-    final_results = []
-    for i, (is_triggered, message, _) in enumerate(triggered_results):
+    for (is_triggered, message, q2_end_time_utc) in triggered_results:
         if is_triggered and message:
-            # schedule background actions so this function returns quickly
-            bg_name = f"trigger_handler::{alert_key}::{i}"
-            _schedule_background_task(
-                _handle_trigger_actions(alert_key, alert_details, message, symbols, timeframe_min, user_id, bot=bot),
-                bg_name
-            )
-            final_results.append((True, message, None))  # chart data deferred
+            # create a deterministic signature for the triggering bar if available
+            if q2_end_time_utc is not None:
+                try:
+                    sig = f"bar:{int(pd.to_datetime(q2_end_time_utc, utc=True).timestamp())}"
+                except Exception:
+                    sig = f"msghash:{hash(message)}"
+            else:
+                sig = f"msghash:{hash(message)}"
 
-    if final_results:
-        return final_results[0]
+            if _should_trigger_and_mark(sig):
+                bg_name = f"trigger_handler::{alert_key}"
+                _schedule_background_task(_handle_trigger_actions(alert_key, alert_details, message, symbols, timeframe_min, user_id, bot=bot), bg_name)
+                return True, message, None
+            else:
+                return False, None, None
 
     logger.debug("Alert conditions not met for the most recent quarter pair.")
     return False, None, None
@@ -698,12 +779,15 @@ async def _process_5m_window(alert_details: dict, symbols: list, group_id: str, 
     )
 
     final_results = []
-    for i, (is_triggered, message, _) in enumerate(triggered_results):
+    for i, (is_triggered, message, q2_end_time_utc) in enumerate(triggered_results):
         if is_triggered and message:
-            bg_name = f"trigger_handler_5m::{alert_details.get('user_id')}::{group_id}::{window_number}::{i}"
-            _schedule_background_task(
-                _handle_trigger_actions(f"{alert_details.get('user_id')}::{alert_details.get('category')}::{group_id}::{timeframe_min}", alert_details, message, symbols, timeframe_min, user_id, bot=bot),
-                bg_name
-            )
-            final_results.append((True, message, None))
+            # return signature as third element so caller can dedupe
+            if q2_end_time_utc is not None:
+                try:
+                    sig = f"bar:{int(pd.to_datetime(q2_end_time_utc, utc=True).timestamp())}"
+                except Exception:
+                    sig = f"msghash:{hash(message)}"
+            else:
+                sig = f"msghash:{hash(message)}"
+            final_results.append((True, message, sig))
     return final_results
