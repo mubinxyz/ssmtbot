@@ -274,7 +274,7 @@ def main():
 
     # Add job for alerts
     job_queue = app.job_queue
-    job_queue.run_repeating(check_all_alerts_periodically, interval=59, first=5)
+    job_queue.run_repeating(check_all_alerts_periodically, interval=58, first=5)
 
     # Register handlers using safe_handler decorator
     app.add_handler(CommandHandler("start", safe_handler(start_command)))
