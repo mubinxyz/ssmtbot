@@ -676,73 +676,84 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 except Exception as ex:
                     logger.debug("Failed to draw prev-quarter HL for %s interval %d: %s", norm_symbol, j, ex)
             # --- end FIX ---
-
             if open_col is None:
                 logger.debug("[ChartService] Open column not found for %s; skipping true-open lines", norm_symbol)
             else:
                 n_bounds = len(good_boundaries)
 
-                # --- Draw only windows that start from Q2 (quarter index == 1) ---
-                # Full 4-quarter windows: start must allow access to start+4
-                if n_bounds >= 5:
-                    # valid starts are 0 .. n_bounds-5 inclusive so that start+4 <= n_bounds-1
-                    for start in range(0, n_bounds - 4):
-                        # the 'open' that should be used for this window is the open of interval start+1
-                        open_interval_idx = start + 1
-                        # prefer the precomputed quarter info if available
-                        q_of_open = None
-                        if open_interval_idx < len(boundary_quarter_idx):
-                            q_of_open = boundary_quarter_idx[open_interval_idx]
-                        else:
-                            # fallback: compute from timestamp if we have it
-                            if open_interval_idx < len(interval_open_ts) and interval_open_ts[open_interval_idx] is not None:
-                                q_of_open = _quarter_index_from_boundary(interval_open_ts[open_interval_idx], tz_name=LOCAL_TZ_NAME, timeframe=timeframe)
-
-                        # Only proceed if this open is in Q2 (index == 1)
-                        if q_of_open != 1:
-                            continue
-
-                        # get open_ts, open_price and xstart
-                        open_ts = interval_open_ts[open_interval_idx] if open_interval_idx < len(interval_open_ts) else None
-                        open_price = None
-                        xstart = None
-                        if open_ts is not None:
-                            try:
-                                pos_open = df.index.get_indexer([pd.Timestamp(open_ts)], method="nearest")[0]
-                                if pos_open != -1 and pos_open < len(df):
-                                    open_price = df.iloc[pos_open][open_col]
-                                    xstart = (used_x_centers[pos_open] if (used_x_centers and pos_open < len(used_x_centers)) else float(pos_open))
-                            except Exception:
-                                open_price = None
-                                xstart = None
-
-                        # fallback: if we couldn't get a good open from interval, use the boundary at start+1
-                        if (open_price is None or xstart is None) and (open_interval_idx < len(good_boundaries)):
-                            try:
-                                pos_left = df.index.get_indexer([pd.Timestamp(good_boundaries[open_interval_idx])], method="nearest")[0]
-                                if pos_left != -1 and pos_left < len(df):
-                                    open_price = df.iloc[pos_left][open_col]
-                                    xstart = (used_x_centers[pos_left] if (used_x_centers and pos_left < len(used_x_centers)) else float(pos_left))
-                            except Exception:
-                                pass
-
-                        # compute xend for the full window (start + 4)
+                # --- Draw true-open lines starting from the open of the FIRST candle of each Q2 ---
+                # For an interval i that represents [good_boundaries[i] -> good_boundaries[i+1]],
+                # we treat its 'quarter' as boundary_quarter_idx[i]. We want intervals where that == 1 (Q2).
+                try:
+                    for i in range(0, max(0, n_bounds - 1)):
                         try:
-                            xend = x_coords_for_boundaries[start + 4]
-                        except Exception:
-                            try:
-                                pos_end = df.index.get_indexer([pd.Timestamp(good_boundaries[start + 4])], method="nearest")[0]
-                                xend = (used_x_centers[pos_end] if (used_x_centers and pos_end < len(used_x_centers)) else float(pos_end))
-                            except Exception:
-                                xend = None
+                            if i >= len(boundary_quarter_idx):
+                                # If we don't have a precomputed quarter idx for this boundary, skip
+                                continue
+                            if boundary_quarter_idx[i] != 1:
+                                # only start windows when the interval is Q2
+                                continue
 
-                        # draw only if we have everything
-                        if open_price is not None and xstart is not None and xend is not None:
-                            try:
-                                main_ax.hlines(y=float(open_price), xmin=xstart, xmax=xend, linewidth=1.0,
-                                               colors=TRUEOPEN_COLOR, linestyle=TRUEOPEN_STYLE, alpha=0.95, zorder=2)
-                            except Exception as ex:
-                                logger.debug("Failed to draw true-open for %s window starting at %d: %s", norm_symbol, start, ex)
+                            # Get open timestamp for this interval (first candle in the interval)
+                            open_ts = interval_open_ts[i] if i < len(interval_open_ts) else None
+                            open_price = None
+                            xstart = None
+
+                            # Primary: use the interval's first-candle timestamp
+                            if open_ts is not None:
+                                try:
+                                    pos_open = df.index.get_indexer([pd.Timestamp(open_ts)], method="nearest")[0]
+                                    if pos_open != -1 and pos_open < len(df):
+                                        open_price = df.iloc[pos_open][open_col]
+                                        xstart = (used_x_centers[pos_open] if (used_x_centers and pos_open < len(used_x_centers)) else float(pos_open))
+                                except Exception:
+                                    open_price = None
+                                    xstart = None
+
+                            # Fallback: use the boundary position at good_boundaries[i] (nearest candle to boundary)
+                            if (open_price is None or xstart is None) and i < len(good_boundaries):
+                                try:
+                                    pos_left = df.index.get_indexer([pd.Timestamp(good_boundaries[i])], method="nearest")[0]
+                                    if pos_left != -1 and pos_left < len(df):
+                                        open_price = df.iloc[pos_left][open_col]
+                                        xstart = (used_x_centers[pos_left] if (used_x_centers and pos_left < len(used_x_centers)) else float(pos_left))
+                                except Exception:
+                                    pass
+
+                            if open_price is None or xstart is None:
+                                # cannot draw without an open price and xstart
+                                continue
+
+                            # Compute xend = boundary at i+3 (the start of next Q1 after Q4)
+                            xend = None
+                            end_boundary_idx = i + 3
+                            if end_boundary_idx < len(x_coords_for_boundaries):
+                                xend = x_coords_for_boundaries[end_boundary_idx]
+                            else:
+                                # try to find nearest candle to good_boundaries[end_boundary_idx] if boundary exists but not mapped to x_coords
+                                if end_boundary_idx < len(good_boundaries):
+                                    try:
+                                        pos_end = df.index.get_indexer([pd.Timestamp(good_boundaries[end_boundary_idx])], method="nearest")[0]
+                                        if pos_end != -1:
+                                            xend = (used_x_centers[pos_end] if (used_x_centers and pos_end < len(used_x_centers)) else float(pos_end))
+                                    except Exception:
+                                        xend = None
+
+                            # If the full Q2->Q4 window is not available (quarters not formed), extend to last-1 candle
+                            if xend is None:
+                                xend = last_minus_one_x
+
+                            # only draw if we have both xstart and xend
+                            if xstart is not None and xend is not None:
+                                try:
+                                    main_ax.hlines(y=float(open_price), xmin=xstart, xmax=xend, linewidth=1.0,
+                                                   colors=TRUEOPEN_COLOR, linestyle=TRUEOPEN_STYLE, alpha=0.95, zorder=2)
+                                except Exception as ex:
+                                    logger.debug("Failed to draw true-open for %s at interval %d: %s", norm_symbol, i, ex)
+                        except Exception as ex:
+                            logger.debug("True-open loop iteration failed for %s interval %d: %s", norm_symbol, i, ex)
+                except Exception as ex:
+                    logger.debug("True-open drawing logic failed for %s: %s", norm_symbol, ex)
 
                 # --- Extend the most recent incomplete true-open only if that open is in Q2 ---
                 try:
