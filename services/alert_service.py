@@ -584,9 +584,9 @@ async def _handle_trigger_actions(alert_key: str, alert_details: dict, message: 
                 buf = chart_info.get('buffer')
                 sym = chart_info.get('symbol')
                 tf = chart_info.get('timeframe')
-                caption = f"Chart: {sym} {tf}m"
+                # caption = f"Chart: {sym} {tf}m"
                 # send the chart as a separate message; we pass a single-item list containing the buffer
-                await send_alert_notification(user_id, caption, [buf] if buf is not None else [], bot=bot)
+                await send_alert_notification(user_id, [buf] if buf is not None else [], bot=bot)
             except Exception as e:
                 logger.exception("_handle_trigger_actions: sending chart for %s failed: %s", chart_info.get('symbol'), e)
     except Exception as e:
