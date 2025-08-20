@@ -1,5 +1,4 @@
 # services/alert_service.py
-
 import json
 import logging
 import os
@@ -12,38 +11,94 @@ from services.chart_service import generate_chart
 import asyncio
 import inspect
 import threading
-from typing import Optional
+from typing import Optional, Union
 import io
 import math
+import random
 import re
+from ssl import SSLError as SSL_ERROR
 
-# Use the notify_user send function that we updated (it accepts optional bot)
 from services.notify_user import send_alert_notification
 
 # --- Configuration ---
 ALERTS_STORE_FILE = "alerts_store.json"
 TRIGGERED_ALERTS_WITH_CHARTS_FILE = "triggered_alerts_with_charts.json"
-CHARTS_OUTPUT_DIR = "charts"  # If you want to persist charts to disk (optional)
+CHARTS_OUTPUT_DIR = "charts"  # optional persist
 
 TIMEZONE_LITEFINANCE = pytz.timezone('Etc/GMT-3')  # UTC+3
 TIMEZONE_TARGET = pytz.timezone('Asia/Tehran')     # UTC+3:30
 TIMEZONE_UTC = pytz.utc
 
 # Concurrency/timeouts for fetching & charting
-_SYMBOL_FETCH_CONCURRENCY = 6
-_PER_SYMBOL_FETCH_TIMEOUT = 18.0  # seconds per symbol for get_ohlc
-_PER_ALERT_FETCH_TIMEOUT = 40.0   # total time allowed to fetch & resample for an alert
-_CHART_GENERATION_TIMEOUT = 40.0  # seconds (if generate_chart is blocking we use to_thread)
-_SAVE_IO_TIMEOUT = 10.0           # seconds for saving triggered alerts
+_SYMBOL_FETCH_CONCURRENCY = 3
+_PER_SYMBOL_FETCH_TIMEOUT = 30.0
+_PER_ALERT_FETCH_TIMEOUT = 80.0
+_CHART_GENERATION_TIMEOUT = 60.0
+_SAVE_IO_TIMEOUT = 15.0
 
-# Telegram message length guard
 _TELEGRAM_MAX_MESSAGE_LEN = 3900
 
 logger = logging.getLogger(__name__)
 
+# --------------------------
+# Existing group characteristics
+# --------------------------
+GROUP_CHARACTERISTICS = {
+    # "test_move_group": {"label": "Test Move Together", "symbols": ["AAA", "BBB", "CCC"], "type": "move_together"},
+    # "test_reverse_group": {"label": "Test Reverse Moving", "symbols": ["DDD", "EEE", "FFF"], "type": "reverse_moving"},
+    "dxy_eu_gu": {"label": "DXY / EURUSD / GBPUSD", "symbols": ["USDX", "EURUSD", "GBPUSD"], "type": "reverse_moving"},
+    "btc_eth_xrp": {"label": "BTCUSD / ETHUSD / XRPUSD", "symbols": ["BTCUSD", "ETHUSD", "XRPUSD"], "type": "move_together"},
+    "spx_nq_ym": {"label": "S&P500 (SPX) / NASDAQ (NQ) / DOW (YM)", "symbols": ["SPX", "NQ", "YM"], "type": "move_together"},
+    "dxy_xau_xag_aud": {"label": "DXY / XAU / XAG / AUD", "symbols": ["USDX", "XAU", "XAG", "AUD"], "type": "reverse_moving"}
+}
+
+def find_group(category: str, group_id: str):
+    if category == "FOREX CURRENCIES" and group_id in GROUP_CHARACTERISTICS:
+        return GROUP_CHARACTERISTICS[group_id]
+    return None
+
+# schedule background coroutine safely (put this near other helpers / after imports)
+def _schedule_background_task(coro, name: Optional[str] = None) -> Union[asyncio.Task, threading.Thread]:
+    """
+    Schedule coroutine `coro` to run in background.
+
+    - If an asyncio event loop is running in the current thread, use asyncio.create_task().
+    - Otherwise start a new daemon Thread that runs asyncio.run(coro).
+
+    Returns the created asyncio.Task (if loop running) or Thread object (if launched in a thread).
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is not None and loop.is_running():
+        # schedule on current loop
+        try:
+            task = asyncio.create_task(coro)
+            # try to name the task for easier debugging (supported on some Python versions)
+            try:
+                if name:
+                    task.set_name(name)
+            except Exception:
+                pass
+            return task
+        except Exception:
+            logger.exception("_schedule_background_task: failed to create asyncio task, falling back to thread runner")
+
+    # No running event loop -> run coroutine inside a new thread using asyncio.run
+    def _runner():
+        try:
+            asyncio.run(coro)
+        except Exception:
+            logger.exception("_schedule_background_task: background thread runner exception for %s", name)
+
+    t = threading.Thread(target=_runner, daemon=True, name=(name or "bg_task_thread"))
+    t.start()
+    return t
 
 # --------------------------
-# Utility helpers
+# Simple atomic file helper (unchanged)
 # --------------------------
 def _atomic_write_json(path: str, data):
     tmp = f"{path}.tmp"
@@ -69,27 +124,8 @@ def _backup_corrupt_file(path: str) -> None:
     except Exception as e:
         logger.exception("_backup_corrupt_file failed for %s: %s", path, e)
 
-def _escape_for_telegram_markdown_v1(text: str) -> str:
-    """
-    Escape text for Telegram Markdown (v1). The notify_user appears to use ParseMode.MARKDOWN,
-    so escape the characters that can create entities there: _ * ` [ ]
-    Also escape backslash first.
-    """
-    if not isinstance(text, str):
-        text = str(text)
-    text = text.replace('\\', '\\\\')
-    for ch in ['_', '*', '`', '[', ']']:
-        text = text.replace(ch, '\\' + ch)
-    return text
-
-def _truncate_message(text: str, max_len: int = _TELEGRAM_MAX_MESSAGE_LEN) -> str:
-    if len(text) <= max_len:
-        return text
-    return text[: max_len - 3] + '...'
-
-
 # --------------------------
-# Alert storage helpers (robust against corrupted JSON)
+# Alerts storage (unchanged)
 # --------------------------
 def load_alerts():
     if not os.path.exists(ALERTS_STORE_FILE):
@@ -109,11 +145,6 @@ def save_alerts(alerts):
         logger.error(f"Error saving alerts to {ALERTS_STORE_FILE}: {e}")
 
 def load_triggered_alerts_with_charts():
-    """
-    Load triggered alerts list robustly. If the JSON is malformed we try two fallbacks:
-      1) try to parse as newline-delimited JSON (NDJSON)
-      2) backup corrupt file and return empty list
-    """
     if not os.path.exists(TRIGGERED_ALERTS_WITH_CHARTS_FILE):
         return []
     try:
@@ -123,7 +154,6 @@ def load_triggered_alerts_with_charts():
             return data if isinstance(data, list) else []
     except json.JSONDecodeError as e:
         logger.error("Error loading triggered alerts from %s: %s", TRIGGERED_ALERTS_WITH_CHARTS_FILE, e)
-        # try NDJSON parse (one JSON object per line)
         try:
             parsed = []
             with open(TRIGGERED_ALERTS_WITH_CHARTS_FILE, 'r', encoding='utf-8') as f:
@@ -149,63 +179,26 @@ def save_triggered_alert_with_charts(triggered_alert_data):
     except Exception as e:
         logger.exception("Error saving triggered alert to %s: %s", TRIGGERED_ALERTS_WITH_CHARTS_FILE, e)
 
+# --------------------------
+# Utility helpers (escape/truncation)
+# --------------------------
+def _escape_for_telegram_markdown_v1(text: str) -> str:
+    if not isinstance(text, str):
+        text = str(text)
+    text = text.replace('\\', '\\\\')
+    for ch in ['_', '*', '`', '[', ']']:
+        text = text.replace(ch, '\\' + ch)
+    return text
+
+def _truncate_message(text: str, max_len: int = _TELEGRAM_MAX_MESSAGE_LEN) -> str:
+    if text is None:
+        return ''
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3] + '...'
 
 # --------------------------
-# Alert definitions & groups
-# --------------------------
-def _generate_alert_key(user_id, category, group_id, timeframe_min):
-    return f"{user_id}::{category}::{group_id}::{timeframe_min}"
-
-def set_ssmt_alert(user_id: int, group_id: str, timeframe_min: int, category: str = "FOREX CURRENCIES"):
-    alerts = load_alerts()
-    key = _generate_alert_key(user_id, category, group_id, timeframe_min)
-    if key in alerts:
-        alerts[key]["active"] = True
-        alerts[key]["updated_at"] = datetime.now(timezone.utc).isoformat() + 'Z'
-    else:
-        alerts[key] = {
-            "user_id": user_id,
-            "category": category,
-            "group_id": group_id,
-            "timeframe_min": timeframe_min,
-            "active": True,
-            "created_at": datetime.now(timezone.utc).isoformat() + 'Z'
-        }
-    save_alerts(alerts)
-    logger.info(f"Alert set/activated for user {user_id}, group {group_id}, timeframe {timeframe_min}min.")
-
-def deactivate_ssmt_alert(user_id: int, group_id: str, timeframe_min: int, category: str = "FOREX CURRENCIES") -> bool:
-    alerts = load_alerts()
-    key = _generate_alert_key(user_id, category, group_id, timeframe_min)
-    if key in alerts and alerts[key].get("active"):
-        alerts[key]["active"] = False
-        alerts[key]["updated_at"] = datetime.now(timezone.utc).isoformat() + 'Z'
-        save_alerts(alerts)
-        logger.info(f"Alert deactivated for user {user_id}, group {group_id}, timeframe {timeframe_min}min.")
-        return True
-    return False
-
-def get_active_alerts():
-    alerts = load_alerts()
-    return {k: v for k, v in alerts.items() if v.get("active", False)}
-
-GROUP_CHARACTERISTICS = {
-    "test_move_group": {"label": "Test Move Together", "symbols": ["AAA", "BBB", "CCC"], "type": "move_together"},
-    "test_reverse_group": {"label": "Test Reverse Moving", "symbols": ["DDD", "EEE", "FFF"], "type": "reverse_moving"},
-    "dxy_eu_gu": {"label": "DXY / EURUSD / GBPUSD", "symbols": ["USDX", "EURUSD", "GBPUSD"], "type": "reverse_moving"},
-    "btc_eth_xrp": {"label": "BTCUSD / ETHUSD / XRPUSD", "symbols": ["BTCUSD", "ETHUSD", "XRPUSD"], "type": "move_together"},
-    "spx_nq_ym": {"label": "S&P500 (SPX) / NASDAQ (NQ) / DOW (YM)", "symbols": ["SPX", "NQ", "YM"], "type": "move_together"},
-    "dxy_xau_xag_aud": {"label": "DXY / XAU / XAG / AUD", "symbols": ["USDX", "XAU", "XAG", "AUD"], "type": "reverse_moving"}
-}
-
-def find_group(category: str, group_id: str):
-    if category == "FOREX CURRENCIES" and group_id in GROUP_CHARACTERISTICS:
-        return GROUP_CHARACTERISTICS[group_id]
-    return None
-
-
-# --------------------------
-# Time conversion & resampling (CPU-bound) - run in threads
+# Time conversion & resampling (kept as-is)
 # --------------------------
 def _convert_lf_time_to_target(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
@@ -269,82 +262,101 @@ def _resample_to_alert_timeframe(df_1min_or_5min: pd.DataFrame, alert_timeframe_
                 resampled_df['timestamp'] = pd.Series(dtype='int64')
     return resampled_df
 
+# --------------------------
+# Robust fetch wrapper with retries + cooldown
+# --------------------------
+# track consecutive failures and cooldowns for symbols
+_SYMBOL_FAILURES: dict[str, int] = {}            # symbol -> consecutive failure count
+_SYMBOL_COOLDOWN_UNTIL: dict[str, float] = {}   # symbol -> timestamp until which we skip tries
+_FAILURES_BEFORE_COOLDOWN = 3                    # after this many consecutive failures, activate cooldown
+_COOLDOWN_SECONDS = 60 * 3                       # 3 minutes cooldown before retrying a failing symbol
 
-# --------------------------
-# Async-safe data fetching: run get_ohlc in threads with timeouts & concurrency
-# --------------------------
 async def _fetch_symbol_df(symbol: str, data_resolution: int, from_ts: int, to_ts: int, timeout: float) -> Optional[pd.DataFrame]:
-    try:
-        coro = asyncio.to_thread(get_ohlc, symbol, data_resolution, from_ts, to_ts)
-        df = await asyncio.wait_for(coro, timeout=timeout)
-        if df is None or (hasattr(df, 'empty') and df.empty):
-            logger.warning("_fetch_symbol_df: get_ohlc returned empty for %s", symbol)
-            return None
-        df_conv = await asyncio.to_thread(_convert_lf_time_to_target, df)
-        return df_conv
-    except asyncio.TimeoutError:
-        logger.warning("_fetch_symbol_df: timeout fetching %s", symbol)
-    except Exception as e:
-        logger.exception("_fetch_symbol_df: error fetching %s: %s", symbol, e)
+    """
+    Robust wrapper around get_ohlc:
+      - retries with exponential backoff + jitter
+      - overall timeout enforced
+      - marks symbol on cooldown after repeated failures
+      - returns converted DataFrame (or None)
+    """
+    # If symbol is on cooldown, skip early
+    now_ts = asyncio.get_event_loop().time()
+    cooldown_until = _SYMBOL_COOLDOWN_UNTIL.get(symbol)
+    if cooldown_until and now_ts < cooldown_until:
+        logger.warning("_fetch_symbol_df: skipping %s due to cooldown until %.1f (now %.1f)", symbol, cooldown_until, now_ts)
+        return None
+
+    max_attempts = 4
+    base_backoff = 0.8  # seconds
+    attempt = 0
+    start_time = asyncio.get_event_loop().time()
+    last_exc = None
+
+    while attempt < max_attempts:
+        attempt += 1
+        elapsed = asyncio.get_event_loop().time() - start_time
+        remaining_total = timeout - elapsed
+        if remaining_total <= 0:
+            logger.warning("_fetch_symbol_df: overall timeout exhausted for %s after %d attempts", symbol, attempt - 1)
+            break
+
+        per_attempt_timeout = min(remaining_total, timeout)
+        try:
+            coro = asyncio.to_thread(get_ohlc, symbol, data_resolution, from_ts, to_ts)
+            df = await asyncio.wait_for(coro, timeout=per_attempt_timeout)
+
+            if df is None:
+                last_exc = RuntimeError("get_ohlc returned None")
+                logger.warning("_fetch_symbol_df: get_ohlc returned None for %s (attempt %d)", symbol, attempt)
+                raise last_exc
+            if hasattr(df, "empty") and df.empty:
+                last_exc = RuntimeError("empty dataframe")
+                logger.warning("_fetch_symbol_df: get_ohlc returned empty for %s (attempt %d)", symbol, attempt)
+                raise last_exc
+
+            # Convert timestamps/timezones (run in thread)
+            df_conv = await asyncio.to_thread(_convert_lf_time_to_target, df)
+            # Success -> reset failure counter and return
+            _SYMBOL_FAILURES.pop(symbol, None)
+            _SYMBOL_COOLDOWN_UNTIL.pop(symbol, None)
+            return df_conv
+
+        except asyncio.TimeoutError as e:
+            last_exc = e
+            logger.warning("_fetch_symbol_df: attempt %d timeout for %s (per-attempt %ss)", attempt, symbol, per_attempt_timeout)
+        except SSL_ERROR as e:
+            last_exc = e
+            logger.warning("_fetch_symbol_df: SSL error on attempt %d for %s: %s", attempt, symbol, e)
+        except Exception as e:
+            last_exc = e
+            logger.warning("_fetch_symbol_df: attempt %d error fetching %s: %s", attempt, symbol, e)
+
+        # unsuccessful attempt -> increment consecutive failure count
+        prev_fail = _SYMBOL_FAILURES.get(symbol, 0)
+        _SYMBOL_FAILURES[symbol] = prev_fail + 1
+
+        # If failures reached threshold, set a cooldown window
+        if _SYMBOL_FAILURES[symbol] >= _FAILURES_BEFORE_COOLDOWN:
+            until = asyncio.get_event_loop().time() + _COOLDOWN_SECONDS
+            _SYMBOL_COOLDOWN_UNTIL[symbol] = until
+            logger.warning("_fetch_symbol_df: symbol %s is on cooldown for %ds after %d failures", symbol, _COOLDOWN_SECONDS, _SYMBOL_FAILURES[symbol])
+            break
+
+        # exponential backoff with jitter, but do not exceed remaining_total
+        backoff = base_backoff * (2 ** (attempt - 1))
+        jitter = random.uniform(0, backoff * 0.3)
+        sleep_for = min(backoff + jitter, max(0.0, remaining_total - 0.01))
+        if sleep_for > 0:
+            try:
+                await asyncio.sleep(sleep_for)
+            except Exception:
+                pass
+
+    logger.warning("_fetch_symbol_df: all attempts failed for %s (last error: %s). consecutive failures=%d", symbol, repr(last_exc), _SYMBOL_FAILURES.get(symbol, 0))
     return None
 
-async def _get_data_for_alert_checking(symbols: list[str], timeframe_min: int) -> dict[str, pd.DataFrame]:
-    data_map = {}
-    now_target = datetime.now(TIMEZONE_TARGET)
-
-    if timeframe_min == 5:
-        period_minutes = 0.146 * 24 * 60
-        data_resolution = 1
-    elif timeframe_min == 15:
-        period_minutes = 0.7 * 24 * 60
-        data_resolution = 1
-    elif timeframe_min == 60:
-        period_minutes = 2.5 * 24 * 60
-        data_resolution = 5
-    elif timeframe_min == 240:
-        period_minutes = 17.5 * 24 * 60
-        data_resolution = 5
-    else:
-        data_resolution = 1 if timeframe_min <= 15 else 5
-        period_minutes = 4 * timeframe_min
-
-    from_time_target = now_target - timedelta(minutes=period_minutes)
-    from_time_lf = from_time_target.astimezone(TIMEZONE_LITEFINANCE)
-    to_time_lf = now_target.astimezone(TIMEZONE_LITEFINANCE)
-    from_timestamp_lf = int(from_time_lf.timestamp())
-    to_timestamp_lf = int(to_time_lf.timestamp())
-
-    sem = asyncio.Semaphore(_SYMBOL_FETCH_CONCURRENCY)
-    async def _fetch_with_sem(sym):
-        async with sem:
-            return sym, await _fetch_symbol_df(sym, data_resolution, from_timestamp_lf, to_timestamp_lf, _PER_SYMBOL_FETCH_TIMEOUT)
-
-    pending = [asyncio.create_task(_fetch_with_sem(sym)) for sym in symbols]
-    try:
-        done, pending2 = await asyncio.wait(pending, timeout=_PER_ALERT_FETCH_TIMEOUT)
-        for t in done:
-            try:
-                sym, df = t.result()
-                if df is not None and not df.empty:
-                    data_map[sym] = df
-            except Exception as e:
-                logger.exception("_get_data_for_alert_checking: fetch task exception: %s", e)
-        if pending2:
-            for t in pending2:
-                t.cancel()
-            await asyncio.gather(*pending2, return_exceptions=True)
-    except Exception as e:
-        logger.exception("_get_data_for_alert_checking: unexpected error: %s", e)
-        for t in pending:
-            if not t.done():
-                t.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-
-    return data_map
-
-
 # --------------------------
-# Chart generation (async-safe)
+# Chart generation (unchanged)
 # --------------------------
 async def _generate_charts_for_symbols(symbols: list[str], timeframe_min: int) -> list:
     try:
@@ -369,9 +381,8 @@ async def _generate_charts_for_symbols(symbols: list[str], timeframe_min: int) -
         logger.exception("_generate_charts_for_symbols: error: %s", e)
         return [{"error": f"chart generation failed: {e}", "symbol": symbols[i] if i < len(symbols) else "unknown"} for i in range(len(symbols))]
 
-
 # --------------------------
-# Quarter logic helpers (same semantics)
+# Quarter logic helpers (unchanged)
 # --------------------------
 def _quarter_index_from_boundary(boundary_utc: pd.Timestamp, tz_name: str = "Asia/Tehran", timeframe: int = 15) -> int:
     if boundary_utc is None:
@@ -421,7 +432,6 @@ def _format_ts_for_target(ts_utc: pd.Timestamp | None) -> str:
         return t.strftime('%Y-%m-%d %H:%M:%S %Z')
     except Exception:
         return str(ts_utc)
-
 
 # --------------------------
 # Quarter pair check logic (keeps OR semantics for reverse_moving)
@@ -589,29 +599,314 @@ def _check_single_quarter_pair(q1_q2_data: dict, group_id: str, group_type: str,
         logger.error(f"_check_single_quarter_pair: Error processing data for pair: {e}")
     return False, None, None
 
+# --------------------------
+# New: shared symbol cache + pointer persistence
+# --------------------------
+_SYMBOL_DATA_CACHE: dict = {}  # symbol -> {"ts": epoch_seconds, "df": pd.DataFrame}
+_CACHE_TTL_SECONDS = 80       # how long cached symbol data is considered fresh
+_BATCH_POINTER_FILE = "group_batch_pointer.json"
+_BATCH_POINTER_KEY = "pointer"
+
+def _load_batch_pointer() -> int:
+    try:
+        if os.path.exists(_BATCH_POINTER_FILE):
+            with open(_BATCH_POINTER_FILE, 'r', encoding='utf-8') as f:
+                j = json.load(f)
+                return int(j.get(_BATCH_POINTER_KEY, 0))
+    except Exception:
+        logger.debug("Failed to read batch pointer, using 0", exc_info=True)
+    return 0
+
+def _save_batch_pointer(ptr: int) -> None:
+    try:
+        _atomic_write_json(_BATCH_POINTER_FILE, {_BATCH_POINTER_KEY: int(ptr)})
+    except Exception:
+        logger.debug("Failed to save batch pointer", exc_info=True)
+
+def _cache_get(symbol: str):
+    ent = _SYMBOL_DATA_CACHE.get(symbol)
+    if not ent:
+        return None
+    if (datetime.now().timestamp() - ent.get("ts", 0)) > _CACHE_TTL_SECONDS:
+        # stale
+        try:
+            del _SYMBOL_DATA_CACHE[symbol]
+        except Exception:
+            pass
+        return None
+    return ent.get("df")
+
+def _cache_set(symbol: str, df: pd.DataFrame):
+    try:
+        _SYMBOL_DATA_CACHE[symbol] = {"ts": datetime.now().timestamp(), "df": df}
+    except Exception:
+        logger.exception("_cache_set failed for %s", symbol)
 
 # --------------------------
-# Background trigger handler (does long work off-loop)
+# New: batch selection logic
 # --------------------------
+def _all_groups_list() -> list:
+    # canonical order from GROUP_CHARACTERISTICS keys
+    return list(GROUP_CHARACTERISTICS.keys())
+
+def _total_unique_symbols() -> set:
+    symset = set()
+    for g in GROUP_CHARACTERISTICS.values():
+        symset.update(g.get("symbols", []))
+    return symset
+
+def _select_group_batch(target_symbol_count: int, start_index: int) -> (list, int):
+    """
+    Starting at start_index iterate groups accumulating groups until we reach
+    target_symbol_count distinct symbols (or wrap once). Returns (selected_groups, new_pointer)
+    """
+    groups = _all_groups_list()
+    n = len(groups)
+    if n == 0:
+        return [], start_index
+    selected = []
+    seen = set()
+    idx = start_index % n
+    wrapped = False
+    while True:
+        gid = groups[idx]
+        selected.append(gid)
+        for s in GROUP_CHARACTERISTICS[gid].get("symbols", []):
+            seen.add(s)
+        if len(seen) >= target_symbol_count:
+            idx = (idx + 1) % n
+            break
+        idx = (idx + 1) % n
+        if idx % n == start_index % n:
+            # completed full circle
+            wrapped = True
+            break
+    new_pointer = idx % n
+    return selected, new_pointer
+
+# --------------------------
+# New: fetch the raw symbol data for a set of symbols (uses _fetch_symbol_df & cache)
+# --------------------------
+async def _fetch_symbols_bulk(symbols: list[str]) -> dict:
+    """
+    Fetch raw converted OHLC for each symbol (if not in cache). Concurrency-limited.
+    Returns map symbol -> pd.DataFrame (or None for failures).
+    """
+    out = {}
+    sem = asyncio.Semaphore(_SYMBOL_FETCH_CONCURRENCY)
+    now_target = datetime.now(TIMEZONE_TARGET)
+
+    async def _fetch_one(sym):
+        async with sem:
+            try:
+                resolution = 1
+                to_ts = int(now_target.astimezone(TIMEZONE_LITEFINANCE).timestamp())
+                from_ts = int((now_target - timedelta(days=3)).astimezone(TIMEZONE_LITEFINANCE).timestamp())
+                # check cache first
+                cached = _cache_get(sym)
+                if cached is not None:
+                    return sym, cached
+                df = await _fetch_symbol_df(sym, resolution, from_ts, to_ts, _PER_SYMBOL_FETCH_TIMEOUT)
+                if df is not None and not df.empty:
+                    _cache_set(sym, df)
+                return sym, df
+            except Exception as e:
+                logger.exception("_fetch_symbols_bulk: unexpected error for %s: %s", sym, e)
+                return sym, None
+
+    tasks = [asyncio.create_task(_fetch_one(sym)) for sym in symbols]
+    done, pending = await asyncio.wait(tasks, timeout=_PER_ALERT_FETCH_TIMEOUT)
+    for t in done:
+        try:
+            sym, df = t.result()
+            out[sym] = df
+        except Exception as e:
+            logger.exception("_fetch_symbols_bulk: task result error: %s", e)
+    for t in pending:
+        t.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+    return out
+
+# --------------------------
+# New: process a batch of groups (fetch symbols, then process alerts that target those groups)
+# --------------------------
+async def process_group_batch_and_run_alerts(batch_groups: list, alerts_map: dict, bot: Optional[object] = None):
+    """
+    batch_groups: list of group_id strings to process this tick.
+    alerts_map: full alerts dict (key->details) from load_alerts()
+    """
+    # 1) gather unique symbols needed by this batch
+    symbols_needed = []
+    for g in batch_groups:
+        gd = GROUP_CHARACTERISTICS.get(g)
+        if not gd:
+            continue
+        for s in gd.get("symbols", []):
+            if s not in symbols_needed:
+                symbols_needed.append(s)
+
+    if not symbols_needed:
+        logger.debug("process_group_batch_and_run_alerts: no symbols for batch %s", batch_groups)
+        return
+
+    # 2) fetch them in bulk (cached)
+    data_map_raw = await _fetch_symbols_bulk(symbols_needed)
+
+    # 3) For each active alert whose group is in batch_groups, resample and run checks using cached data
+    for alert_key, alert in list(alerts_map.items()):
+        try:
+            if not alert.get("active", False):
+                continue
+            group_id = alert.get("group_id")
+            if group_id not in batch_groups:
+                continue
+            timeframe_min = alert.get("timeframe_min")
+            user_id = alert.get("user_id")
+            category = alert.get("category")
+            group_info = find_group(category, group_id)
+            if not group_info:
+                continue
+            symbols = group_info.get("symbols", [])
+            group_type = group_info.get("type", "unknown")
+
+            # build resampled data_map using cached/raw frames
+            resampled_map = {}
+            missing_symbols = []
+            for sym in symbols:
+                # safer retrieval: avoid truth-testing a DataFrame
+                raw_df = data_map_raw.get(sym, None)
+
+                # treat DataFrame empty as missing and fallback to cache
+                if raw_df is None or (hasattr(raw_df, "empty") and raw_df.empty):
+                    raw_df = _cache_get(sym)
+
+                # final check: missing or empty -> mark missing
+                if raw_df is None or (hasattr(raw_df, "empty") and raw_df.empty):
+                    missing_symbols.append(sym)
+                    continue
+
+                # resample to timeframe (run in thread since CPU bound)
+                try:
+                    res = await asyncio.to_thread(_resample_to_alert_timeframe, raw_df, timeframe_min)
+                except Exception as e:
+                    logger.exception("process_group_batch_and_run_alerts: resample error for %s: %s", sym, e)
+                    missing_symbols.append(sym)
+                    continue
+
+                if res is None or (hasattr(res, 'empty') and res.empty):
+                    missing_symbols.append(sym)
+                else:
+                    resampled_map[sym] = res
+
+            if missing_symbols:
+                logger.warning("process_group_batch_and_run_alerts: missing data for alert %s symbols: %s", alert_key, missing_symbols)
+                continue
+
+            # run the quarter pair check using the resampled_map
+            primary_symbol = symbols[0]
+            other_symbols = symbols[1:]
+            triggered_results = _check_all_quarter_pairs(resampled_map, group_id, group_type, primary_symbol, other_symbols, timeframe_min)
+
+            for (is_triggered, message, q2_end_time_utc) in triggered_results:
+                if is_triggered and message:
+                    if q2_end_time_utc is not None:
+                        try:
+                            sig = f"bar:{int(pd.to_datetime(q2_end_time_utc, utc=True).timestamp())}"
+                        except Exception:
+                            sig = f"msghash:{hash(message)}"
+                    else:
+                        sig = f"msghash:{hash(message)}"
+
+                    # check & mark last trigger signature (avoid duplicates)
+                    alerts_current = load_alerts()
+                    current_entry = alerts_current.get(alert_key, {})
+                    last_sig = current_entry.get("last_trigger_signature")
+                    if last_sig == sig:
+                        logger.info("Skipping duplicate trigger for %s sig=%s", alert_key, sig)
+                        continue
+                    current_entry['last_trigger_signature'] = sig
+                    current_entry['updated_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
+                    alerts_current[alert_key] = current_entry
+                    save_alerts(alerts_current)
+
+                    # schedule background actions (charts & notifications)
+                    bg_name = f"trigger_handler::{alert_key}"
+                    try:
+                        _schedule_background_task(_handle_trigger_actions(alert_key, alert, message, symbols, timeframe_min, user_id, bot=bot), bg_name)
+                    except Exception:
+                        asyncio.create_task(_handle_trigger_actions(alert_key, alert, message, symbols, timeframe_min, user_id, bot=bot))
+
+        except Exception as e:
+            logger.exception("process_group_batch_and_run_alerts: error processing alert %s: %s", alert_key, e)
+
+# --------------------------
+# New: periodic coordinator (to be scheduled by apscheduler)
+# --------------------------
+async def check_all_alerts_periodically_coordinator(bot: Optional[object] = None):
+    """
+    Entrypoint to be scheduled periodically. It selects a batch of groups to process,
+    fetches the necessary symbol data into cache, and processes alerts for those groups.
+    """
+    try:
+        logger.info("Periodic coordinator: selecting batch to process.")
+
+        alerts = load_alerts() or {}
+        # Only process if there are active alerts
+        active_alerts = {k: v for k, v in alerts.items() if v.get("active", False)}
+        if not active_alerts:
+            logger.debug("No active alerts to process.")
+            return
+
+        # determine all unique symbols across all groups to compute target batch size
+        total_symbols = len(_total_unique_symbols())
+        if total_symbols <= 0:
+            total_symbols = 1
+        # user wanted ~10% of 24 -> ~2-3 symbols per tick. We compute target_count dynamically.
+        pct = 0.10
+        target_symbol_count = max(1, int(math.ceil(total_symbols * pct)))
+
+        # load and advance pointer
+        ptr = _load_batch_pointer()
+        batch_groups, new_ptr = _select_group_batch(target_symbol_count, ptr)
+        _save_batch_pointer(new_ptr)
+        logger.info("Periodic coordinator: processing groups batch %s (target %d symbols)", batch_groups, target_symbol_count)
+
+        await process_group_batch_and_run_alerts(batch_groups, alerts, bot=bot)
+
+    except Exception as e:
+        logger.exception("check_all_alerts_periodically_coordinator: unexpected error: %s", e)
+
+# --------------------------
+# Existing background handler (unchanged apart from small truncation behavior)
+# --------------------------
+
 async def _handle_trigger_actions(alert_key: str, alert_details: dict, message: str, symbols: list, timeframe_min: int, user_id: int, bot: Optional[object] = None):
     """
     Generate charts, save JSON, and send notifications in background.
 
-    NOTE: We send charts separately (one message per chart) and send the textual alert first.
-    This avoids Telegram entity parsing errors by escaping for Markdown v1.
+    NOTE: we DO NOT pre-escape `message` here. send_alert_notification (notify_user)
+    takes raw text and will escape once for Telegram Markdown v1. Pre-escaping here
+    caused double-escaping and visible backslashes in messages.
     """
     try:
+        # 1) Generate charts (may return buffers or error dicts)
         chart_data_list = await _generate_charts_for_symbols(symbols, timeframe_min)
 
+        # 2) Save triggered data to storage (non-blocking thread)
         triggered_data = {
             "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
             "alert_key": alert_key,
             "alert_details": alert_details,
             "message": message,
-            "charts": [{"symbol": c.get('symbol'), "timeframe": c.get('timeframe'), "status": 'generated' if c.get('buffer') else c.get('error', 'error')} for c in chart_data_list]
+            "charts": [
+                {
+                    "symbol": c.get('symbol'),
+                    "timeframe": c.get('timeframe'),
+                    "status": 'generated' if c.get('buffer') else c.get('error', 'error')
+                } for c in chart_data_list
+            ]
         }
 
-        # Save triggered alert (file I/O) in thread and with timeout
         try:
             await asyncio.wait_for(asyncio.to_thread(save_triggered_alert_with_charts, triggered_data), timeout=_SAVE_IO_TIMEOUT)
         except asyncio.TimeoutError:
@@ -619,52 +914,13 @@ async def _handle_trigger_actions(alert_key: str, alert_details: dict, message: 
         except Exception as e:
             logger.exception("_handle_trigger_actions: save triggered alert error: %s", e)
 
-        # Prepare image buffers
+        # 3) Prepare image buffers (list of bytes)
         image_buffers = []
         for c in chart_data_list:
             buf = c.get('buffer')
             if buf is None:
                 continue
-            if hasattr(buf, 'read'):
-                try:
-                    b = buf.read()
-                    image_buffers.append(b)
-                except Exception:
-                    try:
-                        buf.seek(0)
-                        image_buffers.append(buf.read())
-                    except Exception:
-                        logger.warning("_handle_trigger_actions: unable to read buffer for chart %s", c.get('symbol'))
-            elif isinstance(buf, (bytes, bytearray)):
-                image_buffers.append(bytes(buf))
-            else:
-                logger.warning("_handle_trigger_actions: chart buffer is unknown type for %s", c.get('symbol'))
-
-        # Sanitize and truncate message to avoid Telegram parse errors (ParseMode.MARKDOWN in notify_user)
-        try:
-            safe_message = _escape_for_telegram_markdown_v1(message)
-            safe_message = _truncate_message(safe_message)
-        except Exception as e:
-            logger.exception("_handle_trigger_actions: message sanitization failed: %s", e)
-            safe_message = _truncate_message(str(message))
-
-        # Send textual notification first (sanitized for Markdown v1)
-        try:
-            await send_alert_notification(user_id, safe_message, [], bot=bot)
-        except Exception as e:
-            logger.exception("_handle_trigger_actions: notifying user (text) failed: %s", e)
-            # try plain fallback (no escaping)
             try:
-                await send_alert_notification(user_id, _truncate_message(str(message)), [], bot=bot)
-            except Exception as e2:
-                logger.exception("_handle_trigger_actions: notifying user (plain text fallback) failed: %s", e2)
-
-        # Then send each chart in a separate message (each as its own file message)
-        for chart_info in chart_data_list:
-            try:
-                buf = chart_info.get('buffer')
-                if buf is None:
-                    continue
                 if hasattr(buf, 'read'):
                     try:
                         b = buf.read()
@@ -673,200 +929,77 @@ async def _handle_trigger_actions(alert_key: str, alert_details: dict, message: 
                             buf.seek(0)
                             b = buf.read()
                         except Exception:
-                            logger.warning("_handle_trigger_actions: unable to read buffer for chart %s", chart_info.get('symbol'))
+                            logger.warning("_handle_trigger_actions: unable to read buffer for chart %s", c.get('symbol'))
                             continue
                 elif isinstance(buf, (bytes, bytearray)):
                     b = bytes(buf)
                 else:
-                    logger.warning("_handle_trigger_actions: chart buffer is unknown type for %s", chart_info.get('symbol'))
+                    logger.warning("_handle_trigger_actions: chart buffer is unknown type for %s", c.get('symbol'))
                     continue
 
-                # send each chart as its own notification (no text)
-                try:
-                    await send_alert_notification(user_id, '', [b], bot=bot)
-                except Exception as e:
-                    logger.exception("_handle_trigger_actions: sending chart for %s failed: %s", chart_info.get('symbol'), e)
+                if b:
+                    image_buffers.append(b)
+            except Exception:
+                logger.exception("_handle_trigger_actions: error reading chart buffer for %s", c.get('symbol'))
+
+        # 4) Send textual notification first (do NOT pre-escape; notify handles escaping)
+        try:
+            truncated = _truncate_message(message)
+            await send_alert_notification(user_id, truncated, [], bot=bot)
+        except Exception as e:
+            logger.exception("_handle_trigger_actions: notifying user (text) failed: %s", e)
+            # fallback: try plain fallback text (stringified)
+            try:
+                await send_alert_notification(user_id, _truncate_message(str(message)), [], bot=bot)
+            except Exception as e2:
+                logger.exception("_handle_trigger_actions: notifying user (plain text fallback) failed: %s", e2)
+
+        # 5) Then send each chart as its own message (no caption)
+        for b in image_buffers:
+            try:
+                await send_alert_notification(user_id, '', [b], bot=bot)
             except Exception as e:
-                logger.exception("_handle_trigger_actions: unexpected error while sending chart: %s", e)
+                logger.exception("_handle_trigger_actions: sending chart failed: %s", e)
 
     except Exception as e:
         logger.exception("_handle_trigger_actions: unexpected error: %s", e)
 
 
 # --------------------------
-# Main check function (async; accepts optional bot)
+# Exported helpers for handlers (unchanged)
 # --------------------------
-async def check_alert_conditions(alert_key: str, alert_details: dict, bot: Optional[object] = None):
-    user_id = alert_details.get('user_id')
-    group_id = alert_details.get('group_id')
-    timeframe_min = alert_details.get('timeframe_min')
-    category = alert_details.get('category')
-    group_info = find_group(category, group_id)
+def set_ssmt_alert(user_id: int, group_id: str, timeframe_min: int, category: str = "FOREX CURRENCIES"):
+    alerts = load_alerts()
+    key = _generate_alert_key(user_id, category, group_id, timeframe_min)
+    if key in alerts:
+        alerts[key]["active"] = True
+        alerts[key]["updated_at"] = datetime.now(timezone.utc).isoformat() + 'Z'
+    else:
+        alerts[key] = {
+            "user_id": user_id,
+            "category": category,
+            "group_id": group_id,
+            "timeframe_min": timeframe_min,
+            "active": True,
+            "created_at": datetime.now(timezone.utc).isoformat() + 'Z'
+        }
+    save_alerts(alerts)
+    logger.info(f"Alert set/activated for user {user_id}, group {group_id}, timeframe {timeframe_min}min.")
 
-    if not group_info:
-        logger.warning(f"Group info not found for alert {alert_key}")
-        return False, None, None
-
-    symbols = group_info.get('symbols', [])
-    group_type = group_info.get('type', 'unknown')
-    if not symbols:
-        logger.warning(f"No symbols defined for group {group_id}")
-        return False, None, None
-
-    logger.info(f"Checking alert {alert_key} for group {group_id} ({group_type}) with symbols {symbols}")
-
-    def _should_trigger_and_mark(signature: str) -> bool:
-        alerts = load_alerts()
-        alert = alerts.get(alert_key, {})
-        last_sig = alert.get('last_trigger_signature')
-        if last_sig == signature:
-            logger.info(f"Skipping trigger for {alert_key}: same signature {signature}")
-            return False
-        alert['last_trigger_signature'] = signature
-        alert['updated_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
-        alerts[alert_key] = alert
+def deactivate_ssmt_alert(user_id: int, group_id: str, timeframe_min: int, category: str = "FOREX CURRENCIES") -> bool:
+    alerts = load_alerts()
+    key = _generate_alert_key(user_id, category, group_id, timeframe_min)
+    if key in alerts and alerts[key].get("active"):
+        alerts[key]["active"] = False
+        alerts[key]["updated_at"] = datetime.now(timezone.utc).isoformat() + 'Z'
         save_alerts(alerts)
+        logger.info(f"Alert deactivated for user {user_id}, group {group_id}, timeframe {timeframe_min}min.")
         return True
+    return False
 
-    if timeframe_min == 5:
-        now_target = datetime.now(TIMEZONE_TARGET)
-        today = now_target.date()
-        def _localized(h, m): return TIMEZONE_TARGET.localize(datetime.combine(today, datetime.min.time().replace(hour=h, minute=m)))
-        start_time_1 = _localized(1, 30); end_time_1 = _localized(7, 30)
-        start_time_2 = _localized(7, 30); end_time_2 = _localized(13, 30)
-        triggered_results = []
-        if start_time_1 <= now_target < end_time_1:
-            triggered_results = await _process_5m_window(alert_details, symbols, group_id, group_type, user_id, timeframe_min, 1, bot)
-        elif start_time_2 <= now_target < end_time_2:
-            triggered_results = await _process_5m_window(alert_details, symbols, group_id, group_type, user_id, timeframe_min, 2, bot)
-        else:
-            logger.info("Outside 5m alert windows, no processing")
-            return False, None, None
+def get_active_alerts():
+    alerts = load_alerts()
+    return {k: v for k, v in alerts.items() if v.get("active", False)}
 
-        for (is_triggered, message, signature) in triggered_results:
-            if is_triggered and message:
-                sig = signature or f"msghash:{hash(message)}"
-                if _should_trigger_and_mark(sig):
-                    bg_name = f"trigger_handler::{alert_key}"
-                    _schedule_background_task(_handle_trigger_actions(alert_key, alert_details, message, symbols, timeframe_min, user_id, bot=bot), bg_name)
-                    return True, message, None
-                else:
-                    return False, None, None
-        return False, None, None
-
-    data_map_raw = await _get_data_for_alert_checking(symbols, timeframe_min)
-    if not data_map_raw:
-        logger.error("No data fetched for alert check.")
-        return False, None, None
-
-    if len(data_map_raw) != len(symbols):
-         missing_symbols = set(symbols) - set(data_map_raw.keys())
-         logger.error(f"Failed to fetch data for symbols: {missing_symbols}")
-         return False, None, None
-
-    resample_tasks = []
-    for symbol, df in data_map_raw.items():
-        resample_tasks.append(asyncio.create_task(asyncio.to_thread(_resample_to_alert_timeframe, df, timeframe_min)))
-    try:
-        resampled_results = await asyncio.wait_for(asyncio.gather(*resample_tasks, return_exceptions=True), timeout=_PER_ALERT_FETCH_TIMEOUT)
-    except asyncio.TimeoutError:
-        logger.error("Resampling timeout during alert check.")
-        for t in resample_tasks:
-            if not t.done():
-                t.cancel()
-        return False, None, None
-
-    data_map = {}
-    for sym, res in zip(data_map_raw.keys(), resampled_results):
-        if isinstance(res, Exception):
-            logger.exception("_resample_to_alert_timeframe produced exception for %s: %s", sym, res)
-        elif res is None or (hasattr(res, 'empty') and res.empty):
-            logger.warning("Resampling for %s produced empty result", sym)
-        else:
-            data_map[sym] = res
-
-    if len(data_map) != len(symbols):
-         logger.error(f"Insufficient data after resampling. Expected {len(symbols)}, got {len(data_map)}.")
-         return False, None, None
-
-    primary_symbol = symbols[0]
-    other_symbols = symbols[1:]
-
-    triggered_results = _check_all_quarter_pairs(
-        data_map, group_id, group_type, primary_symbol, other_symbols, timeframe_min
-    )
-
-    for (is_triggered, message, q2_end_time_utc) in triggered_results:
-        if is_triggered and message:
-            if q2_end_time_utc is not None:
-                try:
-                    sig = f"bar:{int(pd.to_datetime(q2_end_time_utc, utc=True).timestamp())}"
-                except Exception:
-                    sig = f"msghash:{hash(message)}"
-            else:
-                sig = f"msghash:{hash(message)}"
-
-            if _should_trigger_and_mark(sig):
-                bg_name = f"trigger_handler::{alert_key}"
-                _schedule_background_task(_handle_trigger_actions(alert_key, alert_details, message, symbols, timeframe_min, user_id, bot=bot), bg_name)
-                return True, message, None
-            else:
-                return False, None, None
-
-    logger.debug("Alert conditions not met for the most recent quarter pair.")
-    return False, None, None
-
-
-async def _process_5m_window(alert_details: dict, symbols: list, group_id: str, group_type: str,
-                            user_id: int, timeframe_min: int, window_number: int, bot: Optional[object] = None):
-    data_map_raw = await _get_data_for_alert_checking(symbols, timeframe_min)
-    if not data_map_raw:
-        logger.error("No data fetched for 5m alert check in window.")
-        return []
-    if len(data_map_raw) != len(symbols):
-         missing_symbols = set(symbols) - set(data_map_raw.keys())
-         logger.error(f"_process_5m_window: Failed to fetch data for symbols in window {window_number}: {missing_symbols}")
-         return []
-
-    resample_tasks = [asyncio.create_task(asyncio.to_thread(_resample_to_alert_timeframe, df, timeframe_min)) for df in data_map_raw.values()]
-    try:
-        resampled_results = await asyncio.wait_for(asyncio.gather(*resample_tasks, return_exceptions=True), timeout=_PER_ALERT_FETCH_TIMEOUT)
-    except asyncio.TimeoutError:
-        logger.error("_process_5m_window: resampling timeout")
-        for t in resample_tasks:
-            if not t.done():
-                t.cancel()
-        return []
-
-    data_map = {}
-    for sym, res in zip(data_map_raw.keys(), resampled_results):
-        if isinstance(res, Exception):
-            logger.exception("_process_5m_window: resample exception for %s: %s", sym, res)
-        elif res is None or (hasattr(res, 'empty') and res.empty):
-            logger.warning("_process_5m_window: resample empty for %s", sym)
-        else:
-            data_map[sym] = res
-
-    if not data_map or len(data_map) != len(symbols):
-        logger.error(f"Insufficient data for 5m window {window_number}.")
-        return []
-
-    primary_symbol = symbols[0]
-    other_symbols = symbols[1:]
-
-    triggered_results = _check_all_quarter_pairs(
-        data_map, group_id, group_type, primary_symbol, other_symbols, timeframe_min
-    )
-
-    final_results = []
-    for i, (is_triggered, message, q2_end_time_utc) in enumerate(triggered_results):
-        if is_triggered and message:
-            if q2_end_time_utc is not None:
-                try:
-                    sig = f"bar:{int(pd.to_datetime(q2_end_time_utc, utc=True).timestamp())}"
-                except Exception:
-                    sig = f"msghash:{hash(message)}"
-            else:
-                sig = f"msghash:{hash(message)}"
-            final_results.append((True, message, sig))
-    return final_results
+def _generate_alert_key(user_id, category, group_id, timeframe_min):
+    return f"{user_id}::{category}::{group_id}::{timeframe_min}"

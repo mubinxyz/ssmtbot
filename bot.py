@@ -62,8 +62,8 @@ from handlers.alerts_handler import (
     show_alerts_handler,
 )
 
-# alerts checking
-from services.alert_service import get_active_alerts, check_alert_conditions
+# Use the batched coordinator from the alert service
+import services.alert_service as alert_service
 
 # logging
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=LOG_LEVEL)
@@ -72,10 +72,11 @@ logger = logging.getLogger(__name__)
 # Global executor for sync operations (DB, file I/O)
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
-# Alert check concurrency/timeouts
+# These were used by the old per-alert runner; keep if you need elsewhere
 MAX_CONCURRENT_ALERT_CHECKS = 6
 PER_ALERT_TIMEOUT = 30.0
 GLOBAL_BATCH_TIMEOUT = 120.0
+
 
 # -----------------------------
 # Utilities for safe handlers
@@ -120,73 +121,22 @@ def safe_handler(fn: Callable[[Update, ContextTypes.DEFAULT_TYPE], Awaitable[Non
             logger.exception("Unhandled exception in handler %s", getattr(fn, "__name__", str(fn)))
     return wrapper
 
+
 # -----------------------------
-# Alert periodic job
+# Periodic coordinator job
 # -----------------------------
 async def check_all_alerts_periodically(context: ContextTypes.DEFAULT_TYPE):
-    start_time = time.monotonic()
-    logger.info("Running periodic alert check...")
+    """
+    JobQueue callback — schedule the batched coordinator as a background task
+    so the JobQueue remains responsive. The real work is done inside
+    alert_service.check_all_alerts_periodically_coordinator.
+    """
     try:
-        loop = asyncio.get_running_loop()
-        active_alerts = await loop.run_in_executor(executor, get_active_alerts)
-        if not active_alerts:
-            logger.debug("No active alerts.")
-            return
-
-        alert_items = list(active_alerts.items())
-        sem = asyncio.Semaphore(MAX_CONCURRENT_ALERT_CHECKS)
-
-        async def _sem_wrapped_check(alert_key, alert_details):
-            await sem.acquire()
-            try:
-                try:
-                    sig = inspect.signature(check_alert_conditions)
-                    accepts_bot = 'bot' in sig.parameters or 'context' in sig.parameters
-                except Exception:
-                    accepts_bot = False
-
-                if accepts_bot:
-                    try:
-                        return await asyncio.wait_for(check_alert_conditions(alert_key, alert_details, bot=context.bot), timeout=PER_ALERT_TIMEOUT)
-                    except asyncio.TimeoutError:
-                        raise
-                else:
-                    return await asyncio.wait_for(check_alert_conditions(alert_key, alert_details), timeout=PER_ALERT_TIMEOUT)
-            finally:
-                sem.release()
-
-        tasks = [asyncio.create_task(_sem_wrapped_check(k, v)) for k, v in alert_items]
-
-        try:
-            done, pending = await asyncio.wait(tasks, timeout=GLOBAL_BATCH_TIMEOUT, return_when=asyncio.ALL_COMPLETED)
-        except Exception as e:
-            logger.exception("Error awaiting alert tasks: %s", e)
-            for t in tasks:
-                if not t.done():
-                    t.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            return
-
-        if pending:
-            logger.warning("Global alert-check timeout reached; cancelling %d tasks", len(pending))
-            for t in pending:
-                t.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-
-        for t in done:
-            try:
-                res = t.result()
-                logger.debug("Alert check result: %s", res)
-            except asyncio.CancelledError:
-                logger.warning("A per-alert task was cancelled.")
-            except Exception as e:
-                logger.exception("Per-alert task raised: %s", e)
-
-        end_time = time.monotonic()
-        logger.info("Finished periodic alert check. Processed %d alerts in %.2f seconds.", len(alert_items), end_time - start_time)
-
+        # schedule coordinator on the same loop (do not await here)
+        asyncio.create_task(alert_service.check_all_alerts_periodically_coordinator(bot=context.bot))
     except Exception as e:
-        logger.exception("Unexpected error in periodic alert check: %s", e)
+        logger.exception("_periodic_job_callback: failed to schedule coordinator: %s", e)
+
 
 # -----------------------------
 # action_dispatcher (safe inside)
@@ -272,9 +222,9 @@ def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Add job for alerts
+    # Add job for alerts: use JobQueue to run repeating callback which schedules the coordinator.
     job_queue = app.job_queue
-    job_queue.run_repeating(check_all_alerts_periodically, interval=6, first=5)
+    job_queue.run_repeating(check_all_alerts_periodically, interval=15, first=5)
 
     # Register handlers using safe_handler decorator
     app.add_handler(CommandHandler("start", safe_handler(start_command)))

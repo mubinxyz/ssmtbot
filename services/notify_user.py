@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_MAX_MSG_LEN = 4096
 
+# If True and message is non-empty, attach it as caption to the first image instead of sending as a separate message.
+# If message is empty, nothing is sent as text; charts are still sent.
+USE_CAPTION_FOR_FIRST_IMAGE = False
+
 # Lazily created shared Bot instance (fallback if caller doesn't pass context.bot)
 _SHARED_BOT: Optional[Bot] = None
 
@@ -53,6 +57,7 @@ async def _maybe_send(callable_or_method, /, *args, **kwargs):
         result = callable_or_method(*args, **kwargs)
         if inspect.isawaitable(result):
             return await result
+        # run blocking send in thread
         return await asyncio.to_thread(lambda: result)
     except TypeError:
         # Fallback to running in thread for some edge-case callables
@@ -77,7 +82,7 @@ def _escape_for_telegram_markdown_v1(text: str) -> str:
 async def notify_user(user_id: int, message: str, parse_mode: Optional[str] = None, bot: Optional[Bot] = None) -> bool:
     """
     Send a plain text notification to a Telegram user.
-    If using ParseMode.MARKDOWN, message will be safely escaped for Markdown v1.
+    If parse_mode == ParseMode.MARKDOWN, message will be escaped once for Markdown v1 here.
     """
     try:
         if not _is_valid_token(BOT_TOKEN) and bot is None:
@@ -94,6 +99,11 @@ async def notify_user(user_id: int, message: str, parse_mode: Optional[str] = No
             except Exception:
                 logger.exception("Markdown escaping failed; sending raw truncated message instead.")
                 text = _truncate_message(message)
+
+        # Do not send empty messages
+        if not text or not text.strip():
+            logger.debug("notify_user: message is empty/whitespace; not sending text message.")
+            return False
 
         send_fn = getattr(bot_to_use, "send_message")
         await _maybe_send(send_fn, chat_id=user_id, text=text, parse_mode=parse_mode)
@@ -129,6 +139,9 @@ async def notify_user_with_charts(
       - file-like objects (io.BytesIO, open file) or raw bytes/bytearray
       - dicts containing {"buffer": <file-like or bytes>} or {"symbol": "...", "timeframe": 15}
       - dicts containing {"error": "reason"} to be reported as text
+
+    NOTE: This function escapes the message **once** using Markdown v1 before sending.
+    If the message is empty/whitespace, it will skip sending a standalone text message and still send charts.
     """
     try:
         if not _is_valid_token(BOT_TOKEN) and bot is None:
@@ -136,22 +149,9 @@ async def notify_user_with_charts(
             return False
 
         bot_to_use = _get_bot(bot)
-        text = _truncate_message(message)
+        text = _truncate_message(message or "")
 
-        # 1) send main message first (with Markdown escaping to avoid parse errors)
-        try:
-            send_msg_fn = getattr(bot_to_use, "send_message")
-            safe_text = _escape_for_telegram_markdown_v1(text)
-            await _maybe_send(send_msg_fn, chat_id=user_id, text=safe_text, parse_mode=ParseMode.MARKDOWN)
-        except Exception:
-            # don't abort on message failure; continue to attempt charts
-            logger.exception("Failed to send main alert message to user %s", user_id)
-
-        if not chart_data_list:
-            logger.info("No chart data to send for user %s", user_id)
-            return True
-
-        # Normalize and collect buffers
+        # Collect buffers/errors and symbol groups for generation
         buffers_to_send: List[io.BytesIO] = []
         errors_to_send: List[str] = []
         symbol_groups: Dict[int, List[str]] = {}  # timeframe -> list of symbols
@@ -165,7 +165,6 @@ async def notify_user_with_charts(
                     obj.seek(0)
                 except Exception:
                     pass
-                # If it's already a BytesIO we can use as-is; otherwise read into BytesIO to be safe
                 if isinstance(obj, io.BytesIO):
                     return obj
                 try:
@@ -176,7 +175,7 @@ async def notify_user_with_charts(
             return None
 
         # First pass: extract any pre-generated buffers and collect symbol/timeframe requests
-        for entry in chart_data_list:
+        for entry in chart_data_list or []:
             if entry is None:
                 continue
             # raw bytes / bytearray
@@ -242,53 +241,84 @@ async def notify_user_with_charts(
 
                 # chart_buffers expected to be iterable
                 for b in chart_buffers:
-                    # accept bytes, bytearray, or file-like
                     converted = _ensure_bytesio(b)
                     if converted:
                         buffers_to_send.append(converted)
                     else:
                         errors_to_send.append(f"Chart generator returned non-buffer for tf={tf}, syms={syms}")
             except Exception as e:
-                logger.exception("Chart generation failed for timeframe %s symbols %s: %s", tf, syms, e)
-                errors_to_send.append(f"Chart generation failed for {syms} @ {tf}m: {e}")
+                logger.exception("Chart generation failed for tf=%s syms=%s: %s", tf, syms, e)
+                errors_to_send.append(f"Chart generation failed for {syms} @ {tf}min: {e}")
 
-        # Send error messages (if any) as plain text so user knows
-        for err in errors_to_send:
+        # If there were any errors collected, send them as a follow-up message (escaped) only if non-empty
+        if errors_to_send:
             try:
-                await _maybe_send(getattr(bot_to_use, "send_message"), chat_id=user_id, text=_truncate_message(f"❌ {err}"))
+                err_text = "\n".join(errors_to_send)
+                safe_err_text = _escape_for_telegram_markdown_v1(_truncate_message(err_text))
+                await _maybe_send(getattr(bot_to_use, "send_message"), chat_id=user_id, text=safe_err_text, parse_mode=ParseMode.MARKDOWN)
             except Exception:
-                logger.exception("Failed to send chart error message to user %s: %s", user_id, err)
+                logger.exception("Failed to send chart generation errors to user %s", user_id)
 
+        # If text is non-empty, send it as a standalone message (escaped) unless we prefer to attach it as caption.
+        sent_text = False
+        if text and text.strip():
+            if USE_CAPTION_FOR_FIRST_IMAGE:
+                # we'll attach as caption on first image later — do nothing here
+                logger.debug("notify_user_with_charts: message present; will use as caption on first image.")
+            else:
+                try:
+                    send_msg_fn = getattr(bot_to_use, "send_message")
+                    safe_text = _escape_for_telegram_markdown_v1(text)
+                    await _maybe_send(send_msg_fn, chat_id=user_id, text=safe_text, parse_mode=ParseMode.MARKDOWN)
+                    sent_text = True
+                except Exception:
+                    logger.exception("Failed to send main alert message to user %s", user_id)
+                    sent_text = False
+        else:
+            logger.debug("notify_user_with_charts: main message empty/whitespace; skipping send_message() and proceeding to charts.")
+
+        # Send images; try media_group (batched) first where available, otherwise send individually.
         if not buffers_to_send:
             logger.info("No chart buffers to send for user %s", user_id)
-            return True
+            # if no charts and we didn't send text, still return whether text was sent
+            return sent_text
 
-        # Telegram send_media_group limit: max 10 items per request
-        MAX_MEDIA = 10
-        batches: List[List[io.BytesIO]] = [buffers_to_send[i:i + MAX_MEDIA] for i in range(0, len(buffers_to_send), MAX_MEDIA)]
-
-        for batch in batches:
+        # Prepare media batches and optionally add caption to first image
+        batch_size = 10
+        for i in range(0, len(buffers_to_send), batch_size):
+            batch = buffers_to_send[i:i + batch_size]
             media_items: List[InputMediaPhoto] = []
-            for buf in batch:
+            for j, b in enumerate(batch):
                 try:
-                    buf.seek(0)
+                    try:
+                        b.seek(0)
+                    except Exception:
+                        pass
+                    # If this is the very first image in the entire send and caption usage is requested
+                    caption = None
+                    if USE_CAPTION_FOR_FIRST_IMAGE and text and text.strip() and i == 0 and j == 0:
+                        caption = _truncate_message(text)
+                        caption = _escape_for_telegram_markdown_v1(caption)
+                    if caption:
+                        media_items.append(InputMediaPhoto(media=b, caption=caption, parse_mode=ParseMode.MARKDOWN))
+                    else:
+                        media_items.append(InputMediaPhoto(media=b))
                 except Exception:
-                    pass
-                # InputMediaPhoto accepts file-like objects; use the BytesIO directly
-                media_items.append(InputMediaPhoto(media=buf))
+                    logger.exception("Failed to prepare InputMediaPhoto for user %s", user_id)
 
-            # TRY: attempt send_media_group, with a short retry on transient failure
+            if not media_items:
+                continue
+
+            # try to send as a single media_group
             try:
-                await _send_media_group_nonblocking(bot_to_use, chat_id=user_id, media=media_items)
+                await _send_media_group_nonblocking(bot_to_use, user_id, media_items)
             except Exception as e:
-                # Log a concise warning (no huge stack trace) and attempt one quick retry
+                # short backoff + retry once, then fallback to per-image sends
                 logger.warning("send_media_group failed for user %s (will retry once then fallback): %s", user_id, str(e))
-                # short backoff
                 try:
                     await asyncio.sleep(0.5)
-                    await _send_media_group_nonblocking(bot_to_use, chat_id=user_id, media=media_items)
+                    await _send_media_group_nonblocking(bot_to_use, user_id, media_items)
                 except Exception as e2:
-                    # Final fallback: send images one-by-one. Log concise message (no full traceback).
                     logger.warning("send_media_group retry failed for user %s; falling back to send_photo per image: %s", user_id, str(e2))
                     for buf in batch:
                         try:
@@ -305,18 +335,9 @@ async def notify_user_with_charts(
         return False
 
 
-def format_alert_message(message: str) -> str:
-    """
-    Format alert message for presentation (escape for Markdown v1 by default).
-    """
-    if not isinstance(message, str):
-        message = str(message)
-    try:
-        return _escape_for_telegram_markdown_v1(message)
-    except Exception:
-        return message
-
-
+# -------------------------
+# Public high-level API
+# -------------------------
 async def send_alert_notification(
     user_id: int,
     alert_message: str,
@@ -325,17 +346,17 @@ async def send_alert_notification(
 ) -> bool:
     """
     High-level API used by the alert service to notify users.
-    If chart_data_list provided, tries to send charts after the main message.
+
+    Important: DO NOT pre-escape alert_message before calling this function.
+    This function will ensure messages are escaped exactly once (inside notify_user or notify_user_with_charts).
     """
     try:
         if chart_data_list:
-            # notify_user_with_charts will escape the message for Markdown (safe)
+            # If charts are present, delegate to notify_user_with_charts (it will escape once and handle charts)
             return await notify_user_with_charts(user_id, alert_message, chart_data_list, bot=bot)
         else:
-            formatted_message = format_alert_message(alert_message)
-            # notify_user expects parse_mode ParseMode.MARKDOWN to be passed so Telegram uses Markdown,
-            # but we've already escaped so the content won't break entity parsing.
-            return await notify_user(user_id, formatted_message, ParseMode.MARKDOWN, bot=bot)
+            # No charts -> send text-only. Let notify_user escape once before sending.
+            return await notify_user(user_id, alert_message, ParseMode.MARKDOWN, bot=bot)
     except Exception as e:
         logger.exception("Error sending alert notification to user %s: %s", user_id, e)
         return False
