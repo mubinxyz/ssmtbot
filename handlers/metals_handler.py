@@ -27,6 +27,7 @@ FALLBACK_SYMBOLS = {
 # Which timeframes the user can choose from (minutes)
 TIMEFRAMES = [5, 15, 60, 240]
 
+
 def _menu_kb() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton("DXY / XAU / XAG / AUD", callback_data="dxy_xau_xag_aud")],
@@ -37,22 +38,35 @@ def _menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
-def _timeframe_kb(gid: str) -> InlineKeyboardMarkup:
+def _timeframe_kb(gid: str, user_id: int) -> InlineKeyboardMarkup:
     """
-    Build a keyboard that lets the user pick a timeframe for the selected group.
+    Build a keyboard that shows timeframe buttons with an inline icon:
+      - 🔔 = active alert for this (user, group, timeframe)
+      - 🔕 = inactive
     Callback: timeframe::{gid}::{tf}
     """
+    # compute active set once for performance
+    active_alerts = alert_service.get_active_alerts() or {}
+    active_tfs = set()
+    if user_id is not None:
+        for a in active_alerts.values():
+            try:
+                if int(a.get("user_id")) == int(user_id) and a.get("group_id") == gid:
+                    active_tfs.add(int(a.get("timeframe_min", -1)))
+            except Exception:
+                continue
+
     rows = []
-    # make 2 buttons per row for nicer layout
     row = []
-    for i, tf in enumerate(TIMEFRAMES):
-        row.append(InlineKeyboardButton(f"{tf}m" if tf < 1440 else "1d", callback_data=f"timeframe::{gid}::{tf}"))
+    for tf in TIMEFRAMES:
+        icon = "🔔" if tf in active_tfs else "🔕"
+        label = f"{tf}m {icon}" if tf < 1440 else f"1d {icon}"
+        row.append(InlineKeyboardButton(label, callback_data=f"timeframe::{gid}::{tf}"))
         if len(row) == 2:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
-    # navigation
     rows.append([InlineKeyboardButton("⬅️ Back", callback_data="menu_metals")])
     return InlineKeyboardMarkup(rows)
 
@@ -104,15 +118,16 @@ async def group_select_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     label, _ = _resolve_label_and_symbols(gid)
-    # Show timeframe options first
-    await q.edit_message_text(f"{label}\nChoose a timeframe:", reply_markup=_timeframe_kb(gid))
+    user_id = update.effective_user.id if update.effective_user else None
+    # Show timeframe options first (with per-user active icons)
+    await q.edit_message_text(f"{label}\nChoose a timeframe:", reply_markup=_timeframe_kb(gid, user_id))
 
 
 async def timeframe_select_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Called when user picks a timeframe.
     Callback format: timeframe::{gid}::{tf}
-    Show the action keyboard for that gid+tf.
+    Show the action keyboard for that gid+tf and current status.
     """
     q = update.callback_query
     await q.answer()
@@ -131,7 +146,23 @@ async def timeframe_select_handler(update: Update, context: ContextTypes.DEFAULT
         return
 
     label, _ = _resolve_label_and_symbols(gid)
-    await q.edit_message_text(f"{label} — {tf}min\nChoose an action:", reply_markup=_action_kb(label, gid, tf_default=tf))
+    user_id = update.effective_user.id if update.effective_user else None
+    # Check status
+    is_active = False
+    try:
+        active_alerts = alert_service.get_active_alerts() or {}
+        for a in active_alerts.values():
+            try:
+                if int(a.get("user_id")) == int(user_id) and a.get("group_id") == gid and int(a.get("timeframe_min", -1)) == tf:
+                    is_active = True
+                    break
+            except Exception:
+                continue
+    except Exception:
+        logger.debug("timeframe_select_handler: error checking status", exc_info=True)
+
+    status_text = "ACTIVE" if is_active else "INACTIVE"
+    await q.edit_message_text(f"{label} — {tf}min\nStatus: {status_text}\nChoose an action:", reply_markup=_action_kb(label, gid, tf_default=tf))
 
 
 async def charts_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -189,10 +220,13 @@ async def activate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     try:
         alert_service.set_ssmt_alert(user_id=user_id, group_id=gid, timeframe_min=tf)
-        await q.edit_message_text(f"✅ Alert activated for {gid} ({tf}min).")
+        # include a back button that returns to timeframe selection for this gid
+        back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=gid)]])
+        await q.edit_message_text(f"✅ Alert activated for {gid} ({tf}min).", reply_markup=back_kb)
     except Exception as e:
         logger.exception("activate failed: %s", e)
-        await q.edit_message_text(f"Failed to activate alert: {e}")
+        back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=gid)]])
+        await q.edit_message_text(f"Failed to activate alert: {e}", reply_markup=back_kb)
 
 
 async def deactivate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -212,7 +246,8 @@ async def deactivate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     user_id = update.effective_user.id
     ok = alert_service.deactivate_ssmt_alert(user_id=user_id, group_id=gid, timeframe_min=tf)
+    back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=gid)]])
     if ok:
-        await q.edit_message_text(f"⛔ Alert deactivated for {gid} ({tf}min).")
+        await q.edit_message_text(f"⛔ Alert deactivated for {gid} ({tf}min).", reply_markup=back_kb)
     else:
-        await q.edit_message_text("No active alert found to deactivate.")
+        await q.edit_message_text("No active alert found to deactivate.", reply_markup=back_kb)
