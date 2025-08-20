@@ -3,9 +3,12 @@ import logging
 import inspect
 import asyncio
 import io
+import random
 from typing import Optional, List, Dict, Any, Iterable, Union
 from telegram import Bot, InputMediaPhoto
 from telegram.constants import ParseMode
+from telegram.error import TimedOut as TelegramTimedOut
+import httpx
 from config import BOT_TOKEN
 from services.chart_service import generate_chart
 
@@ -14,8 +17,12 @@ logger = logging.getLogger(__name__)
 TELEGRAM_MAX_MSG_LEN = 4096
 
 # If True and message is non-empty, attach it as caption to the first image instead of sending as a separate message.
-# If message is empty, nothing is sent as text; charts are still sent.
 USE_CAPTION_FOR_FIRST_IMAGE = False
+
+# Retry tuning for network calls to Telegram
+_SEND_MAX_ATTEMPTS = 3
+_SEND_BASE_BACKOFF = 0.4  # seconds
+_SEND_MAX_BACKOFF = 4.0
 
 # Lazily created shared Bot instance (fallback if caller doesn't pass context.bot)
 _SHARED_BOT: Optional[Bot] = None
@@ -47,21 +54,52 @@ def _get_bot(provided_bot: Optional[Bot] = None) -> Bot:
     return _SHARED_BOT
 
 
+async def _sleep_backoff(attempt: int):
+    backoff = min(_SEND_BASE_BACKOFF * (2 ** (attempt - 1)), _SEND_MAX_BACKOFF)
+    jitter = random.uniform(0, backoff * 0.3)
+    await asyncio.sleep(backoff + jitter)
+
+
+def _is_retryable_exception(exc: Exception) -> bool:
+    # network/transient errors we want to retry
+    if isinstance(exc, (httpx.RequestError, httpx.TimeoutException, httpx.HTTPError, TelegramTimedOut, ConnectionError)):
+        return True
+    # httpcore exceptions may be wrapped; inspect class name if needed
+    name = exc.__class__.__name__
+    if name in ("ConnectTimeout", "ReadTimeout", "WriteTimeout", "ReadError", "ConnectError"):
+        return True
+    return False
+
+
 async def _maybe_send(callable_or_method, /, *args, **kwargs):
     """
-    Call and await if coroutine; otherwise run in thread. Works for Bot methods or other callables.
+    Call the passed callable/method, with retries on transient network errors.
+    - If callable is coroutinefunction, await it.
+    - If it's a blocking function, run in a thread.
+    Retries on httpx / telegram TimedOut / connection errors.
     """
-    try:
-        if inspect.iscoroutinefunction(callable_or_method):
-            return await callable_or_method(*args, **kwargs)
-        result = callable_or_method(*args, **kwargs)
-        if inspect.isawaitable(result):
-            return await result
-        # run blocking send in thread
-        return await asyncio.to_thread(lambda: result)
-    except TypeError:
-        # Fallback to running in thread for some edge-case callables
-        return await asyncio.to_thread(lambda: callable_or_method(*args, **kwargs))
+    last_exc = None
+    for attempt in range(1, _SEND_MAX_ATTEMPTS + 1):
+        try:
+            if inspect.iscoroutinefunction(callable_or_method):
+                return await callable_or_method(*args, **kwargs)
+            result = callable_or_method(*args, **kwargs)
+            if inspect.isawaitable(result):
+                return await result
+            # blocking call -> run in thread
+            return await asyncio.to_thread(lambda: result)
+        except Exception as e:
+            last_exc = e
+            if _is_retryable_exception(e) and attempt < _SEND_MAX_ATTEMPTS:
+                logger.warning("_maybe_send: transient send error (attempt %d/%d): %s — retrying after backoff", attempt, _SEND_MAX_ATTEMPTS, repr(e))
+                try:
+                    await _sleep_backoff(attempt)
+                except Exception:
+                    pass
+                continue
+            # not retryable or last attempt -> log and re-raise
+            logger.exception("_maybe_send: final send error on attempt %d: %s", attempt, repr(e))
+            raise
 
 
 def _escape_for_telegram_markdown_v1(text: str) -> str:
@@ -83,6 +121,8 @@ async def notify_user(user_id: int, message: str, parse_mode: Optional[str] = No
     """
     Send a plain text notification to a Telegram user.
     If parse_mode == ParseMode.MARKDOWN, message will be escaped once for Markdown v1 here.
+
+    Uses retries for transient network errors.
     """
     try:
         if not _is_valid_token(BOT_TOKEN) and bot is None:
@@ -90,7 +130,7 @@ async def notify_user(user_id: int, message: str, parse_mode: Optional[str] = No
             return False
 
         bot_to_use = _get_bot(bot)
-        text = _truncate_message(message)
+        text = _truncate_message(message or "")
 
         # If caller intends Markdown (v1), escape the message to prevent parse errors
         if parse_mode == ParseMode.MARKDOWN:
@@ -116,7 +156,7 @@ async def notify_user(user_id: int, message: str, parse_mode: Optional[str] = No
 
 async def _send_media_group_nonblocking(bot: Bot, chat_id: int, media: List[InputMediaPhoto]):
     """
-    Helper to call send_media_group safely (await or run in thread).
+    Helper to call send_media_group safely (await or run in thread), with retries.
     """
     send_fn = getattr(bot, "send_media_group")
     return await _maybe_send(send_fn, chat_id=chat_id, media=media)
@@ -263,7 +303,6 @@ async def notify_user_with_charts(
         sent_text = False
         if text and text.strip():
             if USE_CAPTION_FOR_FIRST_IMAGE:
-                # we'll attach as caption on first image later — do nothing here
                 logger.debug("notify_user_with_charts: message present; will use as caption on first image.")
             else:
                 try:
@@ -280,7 +319,6 @@ async def notify_user_with_charts(
         # Send images; try media_group (batched) first where available, otherwise send individually.
         if not buffers_to_send:
             logger.info("No chart buffers to send for user %s", user_id)
-            # if no charts and we didn't send text, still return whether text was sent
             return sent_text
 
         # Prepare media batches and optionally add caption to first image
@@ -294,7 +332,6 @@ async def notify_user_with_charts(
                         b.seek(0)
                     except Exception:
                         pass
-                    # If this is the very first image in the entire send and caption usage is requested
                     caption = None
                     if USE_CAPTION_FOR_FIRST_IMAGE and text and text.strip() and i == 0 and j == 0:
                         caption = _truncate_message(text)
@@ -309,14 +346,13 @@ async def notify_user_with_charts(
             if not media_items:
                 continue
 
-            # try to send as a single media_group
+            # try to send as a single media_group (with retry inside _maybe_send)
             try:
                 await _send_media_group_nonblocking(bot_to_use, user_id, media_items)
             except Exception as e:
-                # short backoff + retry once, then fallback to per-image sends
                 logger.warning("send_media_group failed for user %s (will retry once then fallback): %s", user_id, str(e))
                 try:
-                    await asyncio.sleep(0.5)
+                    await _sleep_backoff(1)
                     await _send_media_group_nonblocking(bot_to_use, user_id, media_items)
                 except Exception as e2:
                     logger.warning("send_media_group retry failed for user %s; falling back to send_photo per image: %s", user_id, str(e2))
