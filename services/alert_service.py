@@ -41,6 +41,9 @@ _SAVE_IO_TIMEOUT = 15.0
 
 _TELEGRAM_MAX_MESSAGE_LEN = 3900
 
+# Small epsilon to avoid micro-breaks due to floating precision / rounding noise
+EPS = 1e-6
+
 logger = logging.getLogger(__name__)
 
 # --------------------------
@@ -422,7 +425,7 @@ def _format_ts_for_target(ts_utc: pd.Timestamp | None) -> str:
 
 
 # --------------------------
-# NEW: Revised pretty alert message builder (English-only, no per-symbol summary)
+# NEW: Revised pretty alert message builder (English-only, per-case did-not-break lists)
 # --------------------------
 
 def _build_pretty_alert_message(group_id: str, group_type: str, timeframe_min: int,
@@ -467,7 +470,7 @@ def _build_pretty_alert_message(group_id: str, group_type: str, timeframe_min: i
 
 
 # --------------------------
-# Quarter pair check logic (we already allow non-primary candidates)
+# Quarter pair check logic (reworked to return relevant didn't-break lists)
 # --------------------------
 def _check_all_quarter_pairs(data_map: dict, group_id: str, group_type: str, primary_symbol: str, other_symbols: list, timeframe_min: int):
     triggered_alerts = []
@@ -492,6 +495,7 @@ def _check_all_quarter_pairs(data_map: dict, group_id: str, group_type: str, pri
     if not valid_data or not q1_q2_data:
         return triggered_alerts
 
+    # candidate iteration includes primary + others (allows any symbol to be the one that broke)
     candidate_list = [primary_symbol] + [s for s in other_symbols if s != primary_symbol]
 
     for candidate in candidate_list:
@@ -514,6 +518,12 @@ def _check_all_quarter_pairs(data_map: dict, group_id: str, group_type: str, pri
 
     return triggered_alerts
 
+def _safe_float(val, fallback=None):
+    try:
+        return float(val)
+    except Exception:
+        return fallback
+
 def _check_single_quarter_pair(q1_q2_data: dict, group_id: str, group_type: str,
                               primary_symbol: str, other_symbols: list, timeframe_min: int,
                               q1_end_time_utc: pd.Timestamp, q2_end_time_utc: pd.Timestamp):
@@ -529,6 +539,7 @@ def _check_single_quarter_pair(q1_q2_data: dict, group_id: str, group_type: str,
             q1_idx = _quarter_index_from_boundary(q1_end_time_utc, timeframe=timeframe_min)
             q2_idx = (q1_idx + 1) % 4
 
+        # skip wrap-around
         if q1_idx == 3 and q2_idx == 0:
             logger.info("_check_single_quarter_pair: skipping wrap-around transition Q4->Q1 for primary %s", primary_symbol)
             return False, None, None
@@ -536,44 +547,56 @@ def _check_single_quarter_pair(q1_q2_data: dict, group_id: str, group_type: str,
         q1_label = f"Q{q1_idx + 1}"
         q2_label = f"Q{q2_idx + 1}"
 
-        # Prepare lists of which symbols broke highs / broke lows across the group
+        # compute broke_highs / broke_lows for group (use EPS)
         broke_highs = []
         broke_lows = []
         for sym, d in q1_q2_data.items():
-            try:
-                if float(d['Q2']['high']) > float(d['Q1']['high']):
-                    broke_highs.append(sym)
-                if float(d['Q2']['low']) < float(d['Q1']['low']):
-                    broke_lows.append(sym)
-            except Exception:
+            q1h = _safe_float(d['Q1'].get('high')) if hasattr(d['Q1'], 'get') else _safe_float(d['Q1']['high'])
+            q2h = _safe_float(d['Q2'].get('high')) if hasattr(d['Q2'], 'get') else _safe_float(d['Q2']['high'])
+            q1l = _safe_float(d['Q1'].get('low')) if hasattr(d['Q1'], 'get') else _safe_float(d['Q1']['low'])
+            q2l = _safe_float(d['Q2'].get('low')) if hasattr(d['Q2'], 'get') else _safe_float(d['Q2']['low'])
+            if q1h is None or q2h is None or q1l is None or q2l is None:
                 continue
+            if q2h > q1h + EPS:
+                broke_highs.append(sym)
+            if q2l < q1l - EPS:
+                broke_lows.append(sym)
 
-        # Derive "didn't break" lists (all group symbols minus those that broke)
+        # derive default "didn't break" lists globally (helpful to include, but we'll compute scenario-specific ones later)
         all_group_symbols = list(q1_q2_data.keys())
-        didnt_break_highs = [s for s in all_group_symbols if s not in broke_highs]
-        didnt_break_lows = [s for s in all_group_symbols if s not in broke_lows]
+        global_didnt_break_highs = [s for s in all_group_symbols if s not in broke_highs]
+        global_didnt_break_lows = [s for s in all_group_symbols if s not in broke_lows]
+
+        # gather primary symbol Q values safely
+        q1_high_primary = _safe_float(q1_q2_data[primary_symbol]['Q1'].get('high') if hasattr(q1_q2_data[primary_symbol]['Q1'],'get') else q1_q2_data[primary_symbol]['Q1']['high'])
+        q2_high_primary = _safe_float(q1_q2_data[primary_symbol]['Q2'].get('high') if hasattr(q1_q2_data[primary_symbol]['Q2'],'get') else q1_q2_data[primary_symbol]['Q2']['high'])
+        q1_low_primary = _safe_float(q1_q2_data[primary_symbol]['Q1'].get('low') if hasattr(q1_q2_data[primary_symbol]['Q1'],'get') else q1_q2_data[primary_symbol]['Q1']['low'])
+        q2_low_primary = _safe_float(q1_q2_data[primary_symbol]['Q2'].get('low') if hasattr(q1_q2_data[primary_symbol]['Q2'],'get') else q1_q2_data[primary_symbol]['Q2']['low'])
+
+        # if any of these are None, skip candidate
+        if None in (q1_high_primary, q2_high_primary, q1_low_primary, q2_low_primary):
+            logger.debug("_check_single_quarter_pair: missing primary numeric data for %s, skipping", primary_symbol)
+            return False, None, None
 
         q1_time_str = _format_ts_for_target(q1_end_time_utc)
         q2_time_str = _format_ts_for_target(q2_end_time_utc)
 
-        q1_high_primary = float(q1_q2_data[primary_symbol]['Q1']['high'])
-        q2_high_primary = float(q1_q2_data[primary_symbol]['Q2']['high'])
-        q1_low_primary = float(q1_q2_data[primary_symbol]['Q1']['low'])
-        q2_low_primary = float(q1_q2_data[primary_symbol]['Q2']['low'])
-
         # --- HIGH-break branch ---
-        if q2_high_primary > q1_high_primary:
+        if q2_high_primary > q1_high_primary + EPS:
+            # For move_together: expect others to also have q2_high > q1_high; triggered if at least one other DID NOT break HIGH
             if group_type == "move_together":
                 others_not = []
                 for sym in other_symbols:
-                    try:
-                        sym_q1_high = float(q1_q2_data[sym]['Q1']['high'])
-                        sym_q2_high = float(q1_q2_data[sym]['Q2']['high'])
-                        if sym_q2_high <= sym_q1_high:
-                            others_not.append(sym)
-                    except Exception:
+                    sym_q1_high = _safe_float(q1_q2_data[sym]['Q1'].get('high') if hasattr(q1_q2_data[sym]['Q1'],'get') else q1_q2_data[sym]['Q1']['high'])
+                    sym_q2_high = _safe_float(q1_q2_data[sym]['Q2'].get('high') if hasattr(q1_q2_data[sym]['Q2'],'get') else q1_q2_data[sym]['Q2']['high'])
+                    if sym_q1_high is None or sym_q2_high is None:
+                        # if missing data, treat as "didn't break" conservatively
+                        others_not.append(sym)
                         continue
+                    if sym_q2_high <= sym_q1_high + EPS:
+                        others_not.append(sym)
                 if others_not:
+                    # Build lists to pass to message: specific didn't-break-high (others_not) and global didn't-break-lows
                     msg = _build_pretty_alert_message(
                         group_id=group_id,
                         group_type=group_type,
@@ -587,23 +610,25 @@ def _check_single_quarter_pair(q1_q2_data: dict, group_id: str, group_type: str,
                         q1_val=q1_high_primary,
                         q2_val=q2_high_primary,
                         primary_direction_emoji="➡️",
-                        didnt_break_high_list=didnt_break_highs,
-                        didnt_break_low_list=didnt_break_lows
+                        didnt_break_high_list=others_not,
+                        didnt_break_low_list=global_didnt_break_lows
                     )
                     logger.info("Triggered: %s", msg)
                     return True, msg, q2_end_time_utc
 
+            # For reverse_moving: if primary (could be non-first) breaks HIGH, check that others held LOW (i.e., didn't break their lows)
             elif group_type == "reverse_moving":
                 held_low = []
                 for sym in other_symbols:
-                    try:
-                        sym_q1_low = float(q1_q2_data[sym]['Q1']['low'])
-                        sym_q2_low = float(q1_q2_data[sym]['Q2']['low'])
-                        if sym_q2_low >= sym_q1_low:
-                            held_low.append(sym)
-                    except Exception:
+                    sym_q1_low = _safe_float(q1_q2_data[sym]['Q1'].get('low') if hasattr(q1_q2_data[sym]['Q1'],'get') else q1_q2_data[sym]['Q1']['low'])
+                    sym_q2_low = _safe_float(q1_q2_data[sym]['Q2'].get('low') if hasattr(q1_q2_data[sym]['Q2'],'get') else q1_q2_data[sym]['Q2']['low'])
+                    if sym_q1_low is None or sym_q2_low is None:
+                        held_low.append(sym)
                         continue
+                    if sym_q2_low >= sym_q1_low - EPS:
+                        held_low.append(sym)
                 if held_low:
+                    # For message: show global didn't-break-highs and held_low as didn't-break-lows (relevant)
                     msg = _build_pretty_alert_message(
                         group_id=group_id,
                         group_type=group_type,
@@ -617,24 +642,25 @@ def _check_single_quarter_pair(q1_q2_data: dict, group_id: str, group_type: str,
                         q1_val=q1_high_primary,
                         q2_val=q2_high_primary,
                         primary_direction_emoji="➡️",
-                        didnt_break_high_list=didnt_break_highs,
-                        didnt_break_low_list=didnt_break_lows
+                        didnt_break_high_list=global_didnt_break_highs,
+                        didnt_break_low_list=held_low
                     )
                     logger.info("Triggered: %s", msg)
                     return True, msg, q2_end_time_utc
 
         # --- LOW-break branch ---
-        if q2_low_primary < q1_low_primary:
+        if q2_low_primary < q1_low_primary - EPS:
+            # move_together: primary breaks low, others should also break low; trigger if some other did NOT break low.
             if group_type == "move_together":
                 others_not = []
                 for sym in other_symbols:
-                    try:
-                        sym_q1_low = float(q1_q2_data[sym]['Q1']['low'])
-                        sym_q2_low = float(q1_q2_data[sym]['Q2']['low'])
-                        if sym_q2_low >= sym_q1_low:
-                            others_not.append(sym)
-                    except Exception:
+                    sym_q1_low = _safe_float(q1_q2_data[sym]['Q1'].get('low') if hasattr(q1_q2_data[sym]['Q1'],'get') else q1_q2_data[sym]['Q1']['low'])
+                    sym_q2_low = _safe_float(q1_q2_data[sym]['Q2'].get('low') if hasattr(q1_q2_data[sym]['Q2'],'get') else q1_q2_data[sym]['Q2']['low'])
+                    if sym_q1_low is None or sym_q2_low is None:
+                        others_not.append(sym)
                         continue
+                    if sym_q2_low >= sym_q1_low - EPS:
+                        others_not.append(sym)
                 if others_not:
                     msg = _build_pretty_alert_message(
                         group_id=group_id,
@@ -649,22 +675,23 @@ def _check_single_quarter_pair(q1_q2_data: dict, group_id: str, group_type: str,
                         q1_val=q1_low_primary,
                         q2_val=q2_low_primary,
                         primary_direction_emoji="⬇️",
-                        didnt_break_high_list=didnt_break_highs,
-                        didnt_break_low_list=didnt_break_lows
+                        didnt_break_high_list=global_didnt_break_highs,
+                        didnt_break_low_list=others_not
                     )
                     logger.info("Triggered: %s", msg)
                     return True, msg, q2_end_time_utc
 
+            # reverse_moving: primary breaks low, others should have held HIGH (i.e., didn't break highs)
             elif group_type == "reverse_moving":
                 held_high = []
                 for sym in other_symbols:
-                    try:
-                        sym_q1_high = float(q1_q2_data[sym]['Q1']['high'])
-                        sym_q2_high = float(q1_q2_data[sym]['Q2']['high'])
-                        if sym_q2_high >= sym_q1_high:
-                            held_high.append(sym)
-                    except Exception:
+                    sym_q1_high = _safe_float(q1_q2_data[sym]['Q1'].get('high') if hasattr(q1_q2_data[sym]['Q1'],'get') else q1_q2_data[sym]['Q1']['high'])
+                    sym_q2_high = _safe_float(q1_q2_data[sym]['Q2'].get('high') if hasattr(q1_q2_data[sym]['Q2'],'get') else q1_q2_data[sym]['Q2']['high'])
+                    if sym_q1_high is None or sym_q2_high is None:
+                        held_high.append(sym)
                         continue
+                    if sym_q2_high <= sym_q1_high + EPS:
+                        held_high.append(sym)
                 if held_high:
                     msg = _build_pretty_alert_message(
                         group_id=group_id,
@@ -679,8 +706,8 @@ def _check_single_quarter_pair(q1_q2_data: dict, group_id: str, group_type: str,
                         q1_val=q1_low_primary,
                         q2_val=q2_low_primary,
                         primary_direction_emoji="⬇️",
-                        didnt_break_high_list=didnt_break_highs,
-                        didnt_break_low_list=didnt_break_lows
+                        didnt_break_high_list=held_high,
+                        didnt_break_low_list=global_didnt_break_lows
                     )
                     logger.info("Triggered: %s", msg)
                     return True, msg, q2_end_time_utc
