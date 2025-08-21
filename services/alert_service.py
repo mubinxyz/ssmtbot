@@ -25,7 +25,10 @@ ALERTS_STORE_FILE = "alerts_store.json"
 TRIGGERED_ALERTS_WITH_CHARTS_FILE = "triggered_alerts_with_charts.json"
 CHARTS_OUTPUT_DIR = "charts"  # optional persist
 
-TIMEZONE_LITEFINANCE = pytz.timezone('Etc/GMT-3')  # UTC+3
+# NOTE: LiteFinance provider uses UTC+3 according to your comment.
+# Using pytz.FixedOffset avoids potential sign confusion with 'Etc/GMT-3'.
+# FixedOffset takes minutes east of UTC, so 180 -> UTC+3.
+TIMEZONE_LITEFINANCE = pytz.FixedOffset(180)  # UTC+3 (unambiguous)
 TIMEZONE_TARGET = pytz.timezone('Asia/Tehran')     # UTC+3:30
 TIMEZONE_UTC = pytz.utc
 
@@ -215,6 +218,8 @@ def _convert_lf_time_to_target(df: pd.DataFrame) -> pd.DataFrame:
             df_datetime = df_datetime.dt.tz_localize('UTC')
         elif df_datetime.dt.tz != pytz.utc:
             df_datetime = df_datetime.dt.tz_convert('UTC')
+        # Convert using provider timezone (LiteFinance) then to target timezone
+        # (we use a FixedOffset for TIMEZONE_LITEFINANCE to avoid ambiguous names).
         df_datetime_utc3 = df_datetime.dt.tz_convert(TIMEZONE_LITEFINANCE)
         df_datetime_target = df_datetime_utc3.dt.tz_convert(TIMEZONE_TARGET)
         df['timestamp'] = df_datetime_target.apply(lambda dt: int(dt.timestamp()))
@@ -356,9 +361,13 @@ async def _fetch_symbol_df(symbol: str, data_resolution: int, from_ts: int, to_t
     return None
 
 # --------------------------
-# Chart generation (unchanged)
+# Chart generation (adjusted to label combined buffer)
 # --------------------------
 async def _generate_charts_for_symbols(symbols: list[str], timeframe_min: int) -> list:
+    """
+    Call generate_chart() and return list of dicts: {"symbol": <symbol_or '__combined__'>, "timeframe": timeframe_min, "buffer": <buf>}
+    Handles the case where generate_chart returns an extra combined stacked image appended to the list.
+    """
     try:
         if inspect.iscoroutinefunction(generate_chart):
             coro = generate_chart(symbols, timeframe=timeframe_min)
@@ -367,19 +376,33 @@ async def _generate_charts_for_symbols(symbols: list[str], timeframe_min: int) -
             chart_buffers = await asyncio.wait_for(asyncio.to_thread(generate_chart, symbols, timeframe_min), timeout=_CHART_GENERATION_TIMEOUT)
 
         chart_data_list = []
+        # If generate_chart appended a combined stacked image, it's usually last: detect common case:
+        combined_label = "__combined__"
+        n_symbols = len(symbols) if symbols else 0
+        n_buffers = len(chart_buffers) if chart_buffers else 0
+
         for i, buf in enumerate(chart_buffers):
+            # Label first n_symbols buffers with corresponding symbol if possible.
+            if i < n_symbols:
+                sym_label = symbols[i]
+            else:
+                # If extra buffer(s) exist beyond symbol count, label as combined/unknown
+                if i == n_symbols and n_buffers == n_symbols + 1:
+                    sym_label = combined_label
+                else:
+                    sym_label = "unknown"
             chart_data_list.append({
-                "symbol": symbols[i] if i < len(symbols) else "unknown",
+                "symbol": sym_label,
                 "timeframe": timeframe_min,
                 "buffer": buf
             })
         return chart_data_list
     except asyncio.TimeoutError:
         logger.warning("_generate_charts_for_symbols: timeout generating charts for %s", symbols)
-        return [{"error": "chart generation timeout", "symbol": symbols[i] if i < len(symbols) else "unknown"} for i in range(len(symbols))]
+        return [{"error": "chart generation timeout", "symbol": symbols[i] if (symbols and i < len(symbols)) else "unknown"} for i in range(max(1, len(symbols)))]
     except Exception as e:
         logger.exception("_generate_charts_for_symbols: error: %s", e)
-        return [{"error": f"chart generation failed: {e}", "symbol": symbols[i] if i < len(symbols) else "unknown"} for i in range(len(symbols))]
+        return [{"error": f"chart generation failed: {e}", "symbol": symbols[i] if (symbols and i < len(symbols)) else "unknown"} for i in range(max(1, len(symbols)))]
 
 # --------------------------
 # Quarter logic helpers (unchanged)
@@ -497,7 +520,8 @@ def _check_single_quarter_pair(q1_q2_data: dict, group_id: str, group_type: str,
         # Allowed transitions: Q1->Q2 (0->1), Q2->Q3 (1->2), Q3->Q4 (2->3)
         # Disallow: Q4->Q1 (3->0)
         if q1_idx == 3 and q2_idx == 0:
-            logger.debug("_check_single_quarter_pair: skipping wrap-around transition Q4->Q1 for primary %s", primary_symbol)
+            # Make this visible in logs so you can verify skipped triggers
+            logger.info("_check_single_quarter_pair: skipping wrap-around transition Q4->Q1 for primary %s", primary_symbol)
             return False, None, None
 
         q1_label = f"Q{q1_idx + 1}"
