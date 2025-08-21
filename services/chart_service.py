@@ -1,5 +1,3 @@
-# services/chart_service.py
-
 import io
 import time
 import logging
@@ -19,6 +17,9 @@ from utils.normalize_data import normalize_symbol
 import matplotlib
 matplotlib.use("Agg")   # use non-GUI backend so Tkinter is never involved
 # ==========================================================================
+
+# Added for stacking output images
+from PIL import Image
 
 logger = logging.getLogger("services.chart_service")
 logging.basicConfig(level=logging.INFO)
@@ -480,7 +481,7 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
 
             filtered_boundaries = [b for b in boundaries if (b >= (df.index.min() - tol) and b <= (df.index.max() + tol))]
 
-            fig, axes = mpf.plot(df, type="candle", style="yahoo", ylabel="Price", figsize=(18, 9), volume=False, returnfig=True)
+            fig, axes = mpf.plot(df, type="candle", style="yahoo", ylabel="Price", figsize=(16, 9), volume=False, returnfig=True)
             main_ax = _get_main_ax_from_mpf_axes(axes)
 
             rects = []
@@ -598,7 +599,7 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
             boundary_quarter_idx = [_quarter_index_from_boundary(b, tz_name=LOCAL_TZ_NAME, timeframe=timeframe) for b in good_boundaries]
 
             # --- FIXED: iterate all intervals and extend to last-1 candle if next boundary not available ---
-            # Determine coordinate for last-1 candle (candle -1)
+            # Determine coordinate for last-1 candle (candle -1) — used by true-open extension
             last_minus_one_pos = (len(df) - 2) if len(df) >= 2 else None
             last_minus_one_x = None
             if last_minus_one_pos is not None:
@@ -606,6 +607,16 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                     last_minus_one_x = used_x_centers[last_minus_one_pos]
                 else:
                     last_minus_one_x = float(last_minus_one_pos)
+
+            # NEW: compute coordinate for "last candle + 5" — used ONLY for high/low extension
+            last_pos = (len(df) - 1) if len(df) >= 1 else None
+            last_plus_five_x = None
+            if last_pos is not None:
+                if used_x_centers and last_pos < len(used_x_centers):
+                    # add 5 units to the x coordinate to extend beyond last candle
+                    last_plus_five_x = used_x_centers[last_pos] + 5.0
+                else:
+                    last_plus_five_x = float(last_pos) + 5.0
 
             # interval_count = number of computed intervals
             interval_count = len(interval_highs)
@@ -636,9 +647,9 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                     xend = None
 
                 # If still no xend and there are fewer than expected boundaries (i.e. new quarter not formed),
-                # extend to last-1 candle as requested.
+                # extend high/low lines to last candle + 5 (only for HL).
                 if xend is None:
-                    xend = last_minus_one_x
+                    xend = last_plus_five_x
 
                 def _ts_to_x(ts_val):
                     if ts_val is None:
@@ -853,5 +864,37 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
             with suppress(Exception):
                 if fig is not None:
                     plt.close(fig)
+
+    # --- Optional: create a single stacked image containing all generated charts ---
+    try:
+        if chart_buffers and len(chart_buffers) > 0:
+            pil_imgs = []
+            for b in chart_buffers:
+                try:
+                    b.seek(0)
+                    pil_imgs.append(Image.open(io.BytesIO(b.getvalue())).convert("RGBA"))
+                except Exception:
+                    # skip any buffer we cannot open
+                    continue
+
+            if pil_imgs:
+                max_w = max(img.width for img in pil_imgs)
+                total_h = sum(img.height for img in pil_imgs)
+
+                stacked = Image.new("RGBA", (max_w, total_h), (255, 255, 255, 255))
+                y = 0
+                for img in pil_imgs:
+                    x = (max_w - img.width) // 2
+                    stacked.paste(img, (x, y), img if img.mode == "RGBA" else None)
+                    y += img.height
+
+                combined_buf = io.BytesIO()
+                stacked.save(combined_buf, format="PNG")
+                combined_buf.seek(0)
+                # append combined image as the last item
+                chart_buffers.append(combined_buf)
+    except Exception as ex:
+        logger.debug("Failed to create stacked combined image: %s", ex)
+    # --- end stacking ---
 
     return chart_buffers
