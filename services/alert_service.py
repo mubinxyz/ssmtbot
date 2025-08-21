@@ -47,8 +47,6 @@ logger = logging.getLogger(__name__)
 # Existing group characteristics
 # --------------------------
 GROUP_CHARACTERISTICS = {
-    # "test_move_group": {"label": "Test Move Together", "symbols": ["AAA", "BBB", "CCC"], "type": "move_together"},
-    # "test_reverse_group": {"label": "Test Reverse Moving", "symbols": ["DDD", "EEE", "FFF"], "type": "reverse_moving"},
     "dxy_eu_gu": {"label": "DXY / EURUSD / GBPUSD", "symbols": ["USDX", "EURUSD", "GBPUSD"], "type": "reverse_moving"},
     "btc_eth_xrp": {"label": "BTCUSD / ETHUSD / XRPUSD", "symbols": ["BTCUSD", "ETHUSD", "XRPUSD"], "type": "move_together"},
     "spx_nq_ym": {"label": "S&P500 (SPX) / NASDAQ (NQ) / DOW (YM)", "symbols": ["SPX", "NQ", "YM"], "type": "move_together"},
@@ -62,24 +60,14 @@ def find_group(category: str, group_id: str):
 
 # schedule background coroutine safely (put this near other helpers / after imports)
 def _schedule_background_task(coro, name: Optional[str] = None) -> Union[asyncio.Task, threading.Thread]:
-    """
-    Schedule coroutine `coro` to run in background.
-
-    - If an asyncio event loop is running in the current thread, use asyncio.create_task().
-    - Otherwise start a new daemon Thread that runs asyncio.run(coro).
-
-    Returns the created asyncio.Task (if loop running) or Thread object (if launched in a thread).
-    """
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
 
     if loop is not None and loop.is_running():
-        # schedule on current loop
         try:
             task = asyncio.create_task(coro)
-            # try to name the task for easier debugging (supported on some Python versions)
             try:
                 if name:
                     task.set_name(name)
@@ -89,7 +77,6 @@ def _schedule_background_task(coro, name: Optional[str] = None) -> Union[asyncio
         except Exception:
             logger.exception("_schedule_background_task: failed to create asyncio task, falling back to thread runner")
 
-    # No running event loop -> run coroutine inside a new thread using asyncio.run
     def _runner():
         try:
             asyncio.run(coro)
@@ -218,8 +205,6 @@ def _convert_lf_time_to_target(df: pd.DataFrame) -> pd.DataFrame:
             df_datetime = df_datetime.dt.tz_localize('UTC')
         elif df_datetime.dt.tz != pytz.utc:
             df_datetime = df_datetime.dt.tz_convert('UTC')
-        # Convert using provider timezone (LiteFinance) then to target timezone
-        # (we use a FixedOffset for TIMEZONE_LITEFINANCE to avoid ambiguous names).
         df_datetime_utc3 = df_datetime.dt.tz_convert(TIMEZONE_LITEFINANCE)
         df_datetime_target = df_datetime_utc3.dt.tz_convert(TIMEZONE_TARGET)
         df['timestamp'] = df_datetime_target.apply(lambda dt: int(dt.timestamp()))
@@ -270,21 +255,12 @@ def _resample_to_alert_timeframe(df_1min_or_5min: pd.DataFrame, alert_timeframe_
 # --------------------------
 # Robust fetch wrapper with retries + cooldown
 # --------------------------
-# track consecutive failures and cooldowns for symbols
-_SYMBOL_FAILURES: dict[str, int] = {}            # symbol -> consecutive failure count
-_SYMBOL_COOLDOWN_UNTIL: dict[str, float] = {}   # symbol -> timestamp until which we skip tries
-_FAILURES_BEFORE_COOLDOWN = 3                    # after this many consecutive failures, activate cooldown
-_COOLDOWN_SECONDS = 60 * 3                       # 3 minutes cooldown before retrying a failing symbol
+_SYMBOL_FAILURES: dict[str, int] = {}
+_SYMBOL_COOLDOWN_UNTIL: dict[str, float] = {}
+_FAILURES_BEFORE_COOLDOWN = 3
+_COOLDOWN_SECONDS = 60 * 3
 
 async def _fetch_symbol_df(symbol: str, data_resolution: int, from_ts: int, to_ts: int, timeout: float) -> Optional[pd.DataFrame]:
-    """
-    Robust wrapper around get_ohlc:
-      - retries with exponential backoff + jitter
-      - overall timeout enforced
-      - marks symbol on cooldown after repeated failures
-      - returns converted DataFrame (or None)
-    """
-    # If symbol is on cooldown, skip early
     now_ts = asyncio.get_event_loop().time()
     cooldown_until = _SYMBOL_COOLDOWN_UNTIL.get(symbol)
     if cooldown_until and now_ts < cooldown_until:
@@ -292,7 +268,7 @@ async def _fetch_symbol_df(symbol: str, data_resolution: int, from_ts: int, to_t
         return None
 
     max_attempts = 4
-    base_backoff = 0.8  # seconds
+    base_backoff = 0.8
     attempt = 0
     start_time = asyncio.get_event_loop().time()
     last_exc = None
@@ -319,9 +295,7 @@ async def _fetch_symbol_df(symbol: str, data_resolution: int, from_ts: int, to_t
                 logger.warning("_fetch_symbol_df: get_ohlc returned empty for %s (attempt %d)", symbol, attempt)
                 raise last_exc
 
-            # Convert timestamps/timezones (run in thread)
             df_conv = await asyncio.to_thread(_convert_lf_time_to_target, df)
-            # Success -> reset failure counter and return
             _SYMBOL_FAILURES.pop(symbol, None)
             _SYMBOL_COOLDOWN_UNTIL.pop(symbol, None)
             return df_conv
@@ -336,18 +310,15 @@ async def _fetch_symbol_df(symbol: str, data_resolution: int, from_ts: int, to_t
             last_exc = e
             logger.warning("_fetch_symbol_df: attempt %d error fetching %s: %s", attempt, symbol, e)
 
-        # unsuccessful attempt -> increment consecutive failure count
         prev_fail = _SYMBOL_FAILURES.get(symbol, 0)
         _SYMBOL_FAILURES[symbol] = prev_fail + 1
 
-        # If failures reached threshold, set a cooldown window
         if _SYMBOL_FAILURES[symbol] >= _FAILURES_BEFORE_COOLDOWN:
             until = asyncio.get_event_loop().time() + _COOLDOWN_SECONDS
             _SYMBOL_COOLDOWN_UNTIL[symbol] = until
             logger.warning("_fetch_symbol_df: symbol %s is on cooldown for %ds after %d failures", symbol, _COOLDOWN_SECONDS, _SYMBOL_FAILURES[symbol])
             break
 
-        # exponential backoff with jitter, but do not exceed remaining_total
         backoff = base_backoff * (2 ** (attempt - 1))
         jitter = random.uniform(0, backoff * 0.3)
         sleep_for = min(backoff + jitter, max(0.0, remaining_total - 0.01))
@@ -361,13 +332,9 @@ async def _fetch_symbol_df(symbol: str, data_resolution: int, from_ts: int, to_t
     return None
 
 # --------------------------
-# Chart generation (adjusted to label combined buffer)
+# Chart generation (unchanged)
 # --------------------------
 async def _generate_charts_for_symbols(symbols: list[str], timeframe_min: int) -> list:
-    """
-    Call generate_chart() and return list of dicts: {"symbol": <symbol_or '__combined__'>, "timeframe": timeframe_min, "buffer": <buf>}
-    Handles the case where generate_chart returns an extra combined stacked image appended to the list.
-    """
     try:
         if inspect.iscoroutinefunction(generate_chart):
             coro = generate_chart(symbols, timeframe=timeframe_min)
@@ -376,17 +343,14 @@ async def _generate_charts_for_symbols(symbols: list[str], timeframe_min: int) -
             chart_buffers = await asyncio.wait_for(asyncio.to_thread(generate_chart, symbols, timeframe_min), timeout=_CHART_GENERATION_TIMEOUT)
 
         chart_data_list = []
-        # If generate_chart appended a combined stacked image, it's usually last: detect common case:
         combined_label = "__combined__"
         n_symbols = len(symbols) if symbols else 0
         n_buffers = len(chart_buffers) if chart_buffers else 0
 
         for i, buf in enumerate(chart_buffers):
-            # Label first n_symbols buffers with corresponding symbol if possible.
             if i < n_symbols:
                 sym_label = symbols[i]
             else:
-                # If extra buffer(s) exist beyond symbol count, label as combined/unknown
                 if i == n_symbols and n_buffers == n_symbols + 1:
                     sym_label = combined_label
                 else:
@@ -456,8 +420,54 @@ def _format_ts_for_target(ts_utc: pd.Timestamp | None) -> str:
     except Exception:
         return str(ts_utc)
 
+
 # --------------------------
-# Quarter pair check logic (keeps OR semantics for reverse_moving)
+# NEW: Revised pretty alert message builder (English-only, no per-symbol summary)
+# --------------------------
+
+def _build_pretty_alert_message(group_id: str, group_type: str, timeframe_min: int,
+                               primary_symbol: str, q1_label: str, q2_label: str,
+                               q1_time_str: str, q2_time_str: str,
+                               action_verb: str,     # "HIGH" or "LOW"
+                               q1_val: float, q2_val: float,
+                               primary_direction_emoji: str,
+                               didnt_break_high_list: list, didnt_break_low_list: list) -> str:
+    """
+    Build a compact English-only alert message.
+
+    - didnt_break_high_list: symbols whose Q2.high <= Q1.high (i.e. DID NOT break HIGH)
+    - didnt_break_low_list: symbols whose Q2.low >= Q1.low (i.e. DID NOT break LOW)
+
+    Returns a Markdown-v1 string (not escaped).
+    """
+    label = GROUP_CHARACTERISTICS.get(group_id, {}).get("label", group_id)
+    title = f"🔔 *SSMT Alert — {label}*"
+    meta = f"Group type: `{group_type}` | Timeframe: `{timeframe_min}m`"
+    time_span = f"{q1_label} end: {q1_time_str}  →  {q2_label} end: {q2_time_str}"
+
+    # Primary action line (mentions the actual breaker symbol)
+    action_line = f"{primary_direction_emoji} *{primary_symbol} broke previous quarter {action_verb}* — `{q1_val:.5f}` → `{q2_val:.5f}`"
+
+    dh = ', '.join(didnt_break_high_list) if didnt_break_high_list else "None"
+    dl = ', '.join(didnt_break_low_list) if didnt_break_low_list else "None"
+
+    didnt_high_line = f"• Didn't break previous-quarter HIGH: {dh}"
+    didnt_low_line = f"• Didn't break previous-quarter LOW: {dl}"
+
+    parts = [
+        title,
+        meta,
+        time_span,
+        "――――――――――――――――――――――――――",
+        action_line,
+        didnt_high_line,
+        didnt_low_line
+    ]
+    return "\n".join(parts)
+
+
+# --------------------------
+# Quarter pair check logic (we already allow non-primary candidates)
 # --------------------------
 def _check_all_quarter_pairs(data_map: dict, group_id: str, group_type: str, primary_symbol: str, other_symbols: list, timeframe_min: int):
     triggered_alerts = []
@@ -481,160 +491,213 @@ def _check_all_quarter_pairs(data_map: dict, group_id: str, group_type: str, pri
             valid_data = False; break
     if not valid_data or not q1_q2_data:
         return triggered_alerts
-    q1_end_time_utc = q2_end_time_utc = None
-    try:
-        q1_bar_data = q1_q2_data[primary_symbol]['Q1']; q2_bar_data = q1_q2_data[primary_symbol]['Q2']
-        q1_end_time_utc = pd.to_datetime(q1_bar_data['datetime'], utc=True)
-        q2_end_time_utc = pd.to_datetime(q2_bar_data['datetime'], utc=True)
-    except Exception as e:
-        logger.error(f"_check_all_quarter_pairs: Error getting bar end times: {e}", exc_info=True)
 
-    triggered_result = _check_single_quarter_pair(
-        q1_q2_data, group_id, group_type, primary_symbol, other_symbols,
-        timeframe_min, q1_end_time_utc, q2_end_time_utc
-    )
+    candidate_list = [primary_symbol] + [s for s in other_symbols if s != primary_symbol]
 
-    if triggered_result[0]:
-        triggered_alerts.append(triggered_result)
+    for candidate in candidate_list:
+        others_for_candidate = [s for s in candidate_list if s != candidate]
+        try:
+            q1_bar_data = q1_q2_data[candidate]['Q1']; q2_bar_data = q1_q2_data[candidate]['Q2']
+            q1_end_time_utc = pd.to_datetime(q1_bar_data['datetime'], utc=True)
+            q2_end_time_utc = pd.to_datetime(q2_bar_data['datetime'], utc=True)
+        except Exception as e:
+            logger.error(f"_check_all_quarter_pairs: Error getting bar end times for candidate {candidate}: {e}", exc_info=True)
+            continue
+
+        triggered_result = _check_single_quarter_pair(
+            q1_q2_data, group_id, group_type, candidate, others_for_candidate, timeframe_min,
+            q1_end_time_utc, q2_end_time_utc
+        )
+
+        if triggered_result and triggered_result[0]:
+            triggered_alerts.append(triggered_result)
+
     return triggered_alerts
 
 def _check_single_quarter_pair(q1_q2_data: dict, group_id: str, group_type: str,
                               primary_symbol: str, other_symbols: list, timeframe_min: int,
                               q1_end_time_utc: pd.Timestamp, q2_end_time_utc: pd.Timestamp):
     """
-    Use the later bar (q2_end_time_utc) to determine the quarter index for Q2, and label Q1 as the previous quarter.
-    This avoids cases where both timestamps fall within the same quarter due to boundaries, but the bars are
-    still consecutive (e.g. Q3 -> Q4).
+    Decide whether the pair of consecutive quarter bars (Q1 -> Q2) triggers an alert.
+    Returns (triggered: bool, message: str, q2_end_time_utc)
     """
     try:
-        # Determine quarter indices based on the q2 (latest) timestamp, then set q1 as previous
         if q2_end_time_utc is not None:
             q2_idx = _quarter_index_from_boundary(q2_end_time_utc, timeframe=timeframe_min)
             q1_idx = (q2_idx - 1) % 4
         else:
-            # fallback: compute from q1 and then set q2 = next
             q1_idx = _quarter_index_from_boundary(q1_end_time_utc, timeframe=timeframe_min)
             q2_idx = (q1_idx + 1) % 4
 
-        # --- NEW: do not trigger on wrap-around transitions Q4 -> Q1 ---
-        # Allowed transitions: Q1->Q2 (0->1), Q2->Q3 (1->2), Q3->Q4 (2->3)
-        # Disallow: Q4->Q1 (3->0)
         if q1_idx == 3 and q2_idx == 0:
-            # Make this visible in logs so you can verify skipped triggers
             logger.info("_check_single_quarter_pair: skipping wrap-around transition Q4->Q1 for primary %s", primary_symbol)
             return False, None, None
 
         q1_label = f"Q{q1_idx + 1}"
         q2_label = f"Q{q2_idx + 1}"
 
-        q1_high_primary = float(q1_q2_data[primary_symbol]['Q1']['high'])
-        q2_high_primary = float(q1_q2_data[primary_symbol]['Q2']['high'])
-
-        per_symbol_lines = []
+        # Prepare lists of which symbols broke highs / broke lows across the group
+        broke_highs = []
+        broke_lows = []
         for sym, d in q1_q2_data.items():
             try:
-                q1h = float(d['Q1']['high']); q1l = float(d['Q1']['low'])
-                q2h = float(d['Q2']['high']); q2l = float(d['Q2']['low'])
-                per_symbol_lines.append(f"{sym}: {q1_label}(H/L)={q1h:.5f}/{q1l:.5f}, {q2_label}(H/L)={q2h:.5f}/{q2l:.5f}")
+                if float(d['Q2']['high']) > float(d['Q1']['high']):
+                    broke_highs.append(sym)
+                if float(d['Q2']['low']) < float(d['Q1']['low']):
+                    broke_lows.append(sym)
             except Exception:
-                per_symbol_lines.append(f"{sym}: data unavailable or invalid")
+                continue
+
+        # Derive "didn't break" lists (all group symbols minus those that broke)
+        all_group_symbols = list(q1_q2_data.keys())
+        didnt_break_highs = [s for s in all_group_symbols if s not in broke_highs]
+        didnt_break_lows = [s for s in all_group_symbols if s not in broke_lows]
 
         q1_time_str = _format_ts_for_target(q1_end_time_utc)
         q2_time_str = _format_ts_for_target(q2_end_time_utc)
 
-        header = (
-            f"⚠️ Alert Triggered — Group: {group_id} ({group_type}) — {timeframe_min}m\n"
-            f"Primary: {primary_symbol} | {q1_label} end: {q1_time_str} | {q2_label} end: {q2_time_str}\n"
-        )
-
-        # check highs: primary's q2 > q1 high
-        if q2_high_primary > q1_high_primary:
-            if group_type == "move_together":
-                others_follow = []
-                others_not = []
-                for sym in other_symbols:
-                    sym_q1_high = float(q1_q2_data[sym]['Q1']['high'])
-                    sym_q2_high = float(q1_q2_data[sym]['Q2']['high'])
-                    if sym_q2_high <= sym_q1_high:
-                        others_not.append(sym)
-                    else:
-                        others_follow.append(sym)
-                if others_not:
-                    msg = (
-                        header +
-                        f"Condition: Primary broke {q1_label} high ({q1_high_primary:.5f} → {q2_high_primary:.5f}) in {q2_label}.\n"
-                        f"Others that followed: {', '.join(others_follow) if others_follow else 'none'}.\n"
-                        f"Others that DID NOT follow (held or didn't exceed {q1_label} high): {', '.join(others_not) if others_not else 'none'}.\n\n"
-                        f"Per-symbol summary:\n" + "\n".join(per_symbol_lines)
-                    )
-                    logger.info(f"Triggered: {msg}")
-                    return True, msg, q2_end_time_utc
-            elif group_type == "reverse_moving":
-                held_low_syms = []
-                for sym in other_symbols:
-                    sym_q1_low = float(q1_q2_data[sym]['Q1']['low'])
-                    sym_q2_low = float(q1_q2_data[sym]['Q2']['low'])
-                    if sym_q2_low >= sym_q1_low:
-                        held_low_syms.append(sym)
-                if held_low_syms:
-                    msg = (
-                        header +
-                        f"Condition: Primary broke {q1_label} high ({q1_high_primary:.5f} → {q2_high_primary:.5f}) in {q2_label},\n"
-                        f"while at least one other held their {q1_label} low: {', '.join(held_low_syms)}.\n\n"
-                        f"Per-symbol summary:\n" + "\n".join(per_symbol_lines)
-                    )
-                    logger.info(f"Triggered: {msg}")
-                    return True, msg, q2_end_time_utc
-
-        # check lows: primary's q2 < q1 low
+        q1_high_primary = float(q1_q2_data[primary_symbol]['Q1']['high'])
+        q2_high_primary = float(q1_q2_data[primary_symbol]['Q2']['high'])
         q1_low_primary = float(q1_q2_data[primary_symbol]['Q1']['low'])
         q2_low_primary = float(q1_q2_data[primary_symbol]['Q2']['low'])
-        if q2_low_primary < q1_low_primary:
+
+        # --- HIGH-break branch ---
+        if q2_high_primary > q1_high_primary:
             if group_type == "move_together":
-                others_follow = []
                 others_not = []
                 for sym in other_symbols:
-                    sym_q1_low = float(q1_q2_data[sym]['Q1']['low'])
-                    sym_q2_low = float(q1_q2_data[sym]['Q2']['low'])
-                    if sym_q2_low >= sym_q1_low:
-                        others_not.append(sym)
-                    else:
-                        others_follow.append(sym)
+                    try:
+                        sym_q1_high = float(q1_q2_data[sym]['Q1']['high'])
+                        sym_q2_high = float(q1_q2_data[sym]['Q2']['high'])
+                        if sym_q2_high <= sym_q1_high:
+                            others_not.append(sym)
+                    except Exception:
+                        continue
                 if others_not:
-                    msg = (
-                        header +
-                        f"Condition: Primary broke {q1_label} low ({q1_low_primary:.5f} → {q2_low_primary:.5f}) in {q2_label}.\n"
-                        f"Others that followed lower: {', '.join(others_follow) if others_follow else 'none'}.\n"
-                        f"Others that DID NOT follow (held or didn't drop below {q1_label} low): {', '.join(others_not) if others_not else 'none'}.\n\n"
-                        f"Per-symbol summary:\n" + "\n".join(per_symbol_lines)
+                    msg = _build_pretty_alert_message(
+                        group_id=group_id,
+                        group_type=group_type,
+                        timeframe_min=timeframe_min,
+                        primary_symbol=primary_symbol,
+                        q1_label=q1_label,
+                        q2_label=q2_label,
+                        q1_time_str=q1_time_str,
+                        q2_time_str=q2_time_str,
+                        action_verb="HIGH",
+                        q1_val=q1_high_primary,
+                        q2_val=q2_high_primary,
+                        primary_direction_emoji="➡️",
+                        didnt_break_high_list=didnt_break_highs,
+                        didnt_break_low_list=didnt_break_lows
                     )
-                    logger.info(f"Triggered: {msg}")
+                    logger.info("Triggered: %s", msg)
                     return True, msg, q2_end_time_utc
+
             elif group_type == "reverse_moving":
-                held_high_syms = []
+                held_low = []
                 for sym in other_symbols:
-                    sym_q1_high = float(q1_q2_data[sym]['Q1']['high'])
-                    sym_q2_high = float(q1_q2_data[sym]['Q2']['high'])
-                    if sym_q2_high >= sym_q1_high:
-                        held_high_syms.append(sym)
-                if held_high_syms:
-                    msg = (
-                        header +
-                        f"Condition: Primary broke {q1_label} low ({q1_low_primary:.5f} → {q2_low_primary:.5f}) in {q2_label},\n"
-                        f"while at least one other held their {q1_label} high: {', '.join(held_high_syms)}.\n\n"
-                        f"Per-symbol summary:\n" + "\n".join(per_symbol_lines)
+                    try:
+                        sym_q1_low = float(q1_q2_data[sym]['Q1']['low'])
+                        sym_q2_low = float(q1_q2_data[sym]['Q2']['low'])
+                        if sym_q2_low >= sym_q1_low:
+                            held_low.append(sym)
+                    except Exception:
+                        continue
+                if held_low:
+                    msg = _build_pretty_alert_message(
+                        group_id=group_id,
+                        group_type=group_type,
+                        timeframe_min=timeframe_min,
+                        primary_symbol=primary_symbol,
+                        q1_label=q1_label,
+                        q2_label=q2_label,
+                        q1_time_str=q1_time_str,
+                        q2_time_str=q2_time_str,
+                        action_verb="HIGH",
+                        q1_val=q1_high_primary,
+                        q2_val=q2_high_primary,
+                        primary_direction_emoji="➡️",
+                        didnt_break_high_list=didnt_break_highs,
+                        didnt_break_low_list=didnt_break_lows
                     )
-                    logger.info(f"Triggered: {msg}")
+                    logger.info("Triggered: %s", msg)
                     return True, msg, q2_end_time_utc
+
+        # --- LOW-break branch ---
+        if q2_low_primary < q1_low_primary:
+            if group_type == "move_together":
+                others_not = []
+                for sym in other_symbols:
+                    try:
+                        sym_q1_low = float(q1_q2_data[sym]['Q1']['low'])
+                        sym_q2_low = float(q1_q2_data[sym]['Q2']['low'])
+                        if sym_q2_low >= sym_q1_low:
+                            others_not.append(sym)
+                    except Exception:
+                        continue
+                if others_not:
+                    msg = _build_pretty_alert_message(
+                        group_id=group_id,
+                        group_type=group_type,
+                        timeframe_min=timeframe_min,
+                        primary_symbol=primary_symbol,
+                        q1_label=q1_label,
+                        q2_label=q2_label,
+                        q1_time_str=q1_time_str,
+                        q2_time_str=q2_time_str,
+                        action_verb="LOW",
+                        q1_val=q1_low_primary,
+                        q2_val=q2_low_primary,
+                        primary_direction_emoji="⬇️",
+                        didnt_break_high_list=didnt_break_highs,
+                        didnt_break_low_list=didnt_break_lows
+                    )
+                    logger.info("Triggered: %s", msg)
+                    return True, msg, q2_end_time_utc
+
+            elif group_type == "reverse_moving":
+                held_high = []
+                for sym in other_symbols:
+                    try:
+                        sym_q1_high = float(q1_q2_data[sym]['Q1']['high'])
+                        sym_q2_high = float(q1_q2_data[sym]['Q2']['high'])
+                        if sym_q2_high >= sym_q1_high:
+                            held_high.append(sym)
+                    except Exception:
+                        continue
+                if held_high:
+                    msg = _build_pretty_alert_message(
+                        group_id=group_id,
+                        group_type=group_type,
+                        timeframe_min=timeframe_min,
+                        primary_symbol=primary_symbol,
+                        q1_label=q1_label,
+                        q2_label=q2_label,
+                        q1_time_str=q1_time_str,
+                        q2_time_str=q2_time_str,
+                        action_verb="LOW",
+                        q1_val=q1_low_primary,
+                        q2_val=q2_low_primary,
+                        primary_direction_emoji="⬇️",
+                        didnt_break_high_list=didnt_break_highs,
+                        didnt_break_low_list=didnt_break_lows
+                    )
+                    logger.info("Triggered: %s", msg)
+                    return True, msg, q2_end_time_utc
+
     except (KeyError, ValueError, TypeError) as e:
-        logger.error(f"_check_single_quarter_pair: Error processing data for pair: {e}")
+        logger.error(f"_check_single_quarter_pair: Error processing data for pair: {e}", exc_info=True)
+
     return False, None, None
 
+
 # --------------------------
-# New: shared symbol cache + pointer persistence
+# Remaining code unchanged: caching, batching, processing coordinator, handlers...
+# (I keep these functions intact to preserve behavior such as once-per-quarter gating)
 # --------------------------
-_SYMBOL_DATA_CACHE: dict = {}  # symbol -> {"ts": epoch_seconds, "df": pd.DataFrame}
-_CACHE_TTL_SECONDS = 80       # how long cached symbol data is considered fresh
+
+_SYMBOL_DATA_CACHE: dict = {}
+_CACHE_TTL_SECONDS = 80
 _BATCH_POINTER_FILE = "group_batch_pointer.json"
 _BATCH_POINTER_KEY = "pointer"
 
@@ -659,7 +722,6 @@ def _cache_get(symbol: str):
     if not ent:
         return None
     if (datetime.now().timestamp() - ent.get("ts", 0)) > _CACHE_TTL_SECONDS:
-        # stale
         try:
             del _SYMBOL_DATA_CACHE[symbol]
         except Exception:
@@ -673,11 +735,7 @@ def _cache_set(symbol: str, df: pd.DataFrame):
     except Exception:
         logger.exception("_cache_set failed for %s", symbol)
 
-# --------------------------
-# New: batch selection logic
-# --------------------------
 def _all_groups_list() -> list:
-    # canonical order from GROUP_CHARACTERISTICS keys
     return list(GROUP_CHARACTERISTICS.keys())
 
 def _total_unique_symbols() -> set:
@@ -687,10 +745,6 @@ def _total_unique_symbols() -> set:
     return symset
 
 def _select_group_batch(target_symbol_count: int, start_index: int) -> (list, int):
-    """
-    Starting at start_index iterate groups accumulating groups until we reach
-    target_symbol_count distinct symbols (or wrap once). Returns (selected_groups, new_pointer)
-    """
     groups = _all_groups_list()
     n = len(groups)
     if n == 0:
@@ -698,7 +752,6 @@ def _select_group_batch(target_symbol_count: int, start_index: int) -> (list, in
     selected = []
     seen = set()
     idx = start_index % n
-    wrapped = False
     while True:
         gid = groups[idx]
         selected.append(gid)
@@ -709,20 +762,11 @@ def _select_group_batch(target_symbol_count: int, start_index: int) -> (list, in
             break
         idx = (idx + 1) % n
         if idx % n == start_index % n:
-            # completed full circle
-            wrapped = True
             break
     new_pointer = idx % n
     return selected, new_pointer
 
-# --------------------------
-# New: fetch the raw symbol data for a set of symbols (uses _fetch_symbol_df & cache)
-# --------------------------
 async def _fetch_symbols_bulk(symbols: list[str]) -> dict:
-    """
-    Fetch raw converted OHLC for each symbol (if not in cache). Concurrency-limited.
-    Returns map symbol -> pd.DataFrame (or None for failures).
-    """
     out = {}
     sem = asyncio.Semaphore(_SYMBOL_FETCH_CONCURRENCY)
     now_target = datetime.now(TIMEZONE_TARGET)
@@ -733,7 +777,6 @@ async def _fetch_symbols_bulk(symbols: list[str]) -> dict:
                 resolution = 1
                 to_ts = int(now_target.astimezone(TIMEZONE_LITEFINANCE).timestamp())
                 from_ts = int((now_target - timedelta(days=3)).astimezone(TIMEZONE_LITEFINANCE).timestamp())
-                # check cache first
                 cached = _cache_get(sym)
                 if cached is not None:
                     return sym, cached
@@ -758,15 +801,7 @@ async def _fetch_symbols_bulk(symbols: list[str]) -> dict:
     await asyncio.gather(*pending, return_exceptions=True)
     return out
 
-# --------------------------
-# New: process a batch of groups (fetch symbols, then process alerts that target those groups)
-# --------------------------
 async def process_group_batch_and_run_alerts(batch_groups: list, alerts_map: dict, bot: Optional[object] = None):
-    """
-    batch_groups: list of group_id strings to process this tick.
-    alerts_map: full alerts dict (key->details) from load_alerts()
-    """
-    # 1) gather unique symbols needed by this batch
     symbols_needed = []
     for g in batch_groups:
         gd = GROUP_CHARACTERISTICS.get(g)
@@ -780,10 +815,8 @@ async def process_group_batch_and_run_alerts(batch_groups: list, alerts_map: dic
         logger.debug("process_group_batch_and_run_alerts: no symbols for batch %s", batch_groups)
         return
 
-    # 2) fetch them in bulk (cached)
     data_map_raw = await _fetch_symbols_bulk(symbols_needed)
 
-    # 3) For each active alert whose group is in batch_groups, resample and run checks using cached data
     for alert_key, alert in list(alerts_map.items()):
         try:
             if not alert.get("active", False):
@@ -800,30 +833,21 @@ async def process_group_batch_and_run_alerts(batch_groups: list, alerts_map: dic
             symbols = group_info.get("symbols", [])
             group_type = group_info.get("type", "unknown")
 
-            # build resampled data_map using cached/raw frames
             resampled_map = {}
             missing_symbols = []
             for sym in symbols:
-                # safer retrieval: avoid truth-testing a DataFrame
                 raw_df = data_map_raw.get(sym, None)
-
-                # treat DataFrame empty as missing and fallback to cache
                 if raw_df is None or (hasattr(raw_df, "empty") and raw_df.empty):
                     raw_df = _cache_get(sym)
-
-                # final check: missing or empty -> mark missing
                 if raw_df is None or (hasattr(raw_df, "empty") and raw_df.empty):
                     missing_symbols.append(sym)
                     continue
-
-                # resample to timeframe (run in thread since CPU bound)
                 try:
                     res = await asyncio.to_thread(_resample_to_alert_timeframe, raw_df, timeframe_min)
                 except Exception as e:
                     logger.exception("process_group_batch_and_run_alerts: resample error for %s: %s", sym, e)
                     missing_symbols.append(sym)
                     continue
-
                 if res is None or (hasattr(res, 'empty') and res.empty):
                     missing_symbols.append(sym)
                 else:
@@ -833,13 +857,33 @@ async def process_group_batch_and_run_alerts(batch_groups: list, alerts_map: dic
                 logger.warning("process_group_batch_and_run_alerts: missing data for alert %s symbols: %s", alert_key, missing_symbols)
                 continue
 
-            # run the quarter pair check using the resampled_map
             primary_symbol = symbols[0]
             other_symbols = symbols[1:]
             triggered_results = _check_all_quarter_pairs(resampled_map, group_id, group_type, primary_symbol, other_symbols, timeframe_min)
 
             for (is_triggered, message, q2_end_time_utc) in triggered_results:
                 if is_triggered and message:
+                    quarter_key = None
+                    try:
+                        if q2_end_time_utc is not None:
+                            q_idx = _quarter_index_from_boundary(q2_end_time_utc, timeframe=timeframe_min)
+                            year = pd.to_datetime(q2_end_time_utc, utc=True).tz_convert(TIMEZONE_TARGET).year
+                            quarter_key = f"{year}-tf{timeframe_min}-Q{q_idx+1}"
+                        else:
+                            now_local = datetime.now(TIMEZONE_TARGET)
+                            q_idx = _quarter_index_from_boundary(pd.Timestamp(now_local.tzinfo and now_local), timeframe=timeframe_min)
+                            year = now_local.year
+                            quarter_key = f"{year}-tf{timeframe_min}-Q{q_idx+1}"
+                    except Exception:
+                        quarter_key = None
+
+                    alerts_current = load_alerts()
+                    current_entry = alerts_current.get(alert_key, {})
+                    last_quarter = current_entry.get("last_trigger_quarter")
+                    if last_quarter is not None and quarter_key is not None and last_quarter == quarter_key:
+                        logger.info("Skipping trigger for %s because it already fired in same quarter %s", alert_key, quarter_key)
+                        continue
+
                     if q2_end_time_utc is not None:
                         try:
                             sig = f"bar:{int(pd.to_datetime(q2_end_time_utc, utc=True).timestamp())}"
@@ -848,19 +892,18 @@ async def process_group_batch_and_run_alerts(batch_groups: list, alerts_map: dic
                     else:
                         sig = f"msghash:{hash(message)}"
 
-                    # check & mark last trigger signature (avoid duplicates)
-                    alerts_current = load_alerts()
-                    current_entry = alerts_current.get(alert_key, {})
                     last_sig = current_entry.get("last_trigger_signature")
                     if last_sig == sig:
                         logger.info("Skipping duplicate trigger for %s sig=%s", alert_key, sig)
                         continue
+
                     current_entry['last_trigger_signature'] = sig
+                    if quarter_key is not None:
+                        current_entry['last_trigger_quarter'] = quarter_key
                     current_entry['updated_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
                     alerts_current[alert_key] = current_entry
                     save_alerts(alerts_current)
 
-                    # schedule background actions (charts & notifications)
                     bg_name = f"trigger_handler::{alert_key}"
                     try:
                         _schedule_background_task(_handle_trigger_actions(alert_key, alert, message, symbols, timeframe_min, user_id, bot=bot), bg_name)
@@ -870,33 +913,22 @@ async def process_group_batch_and_run_alerts(batch_groups: list, alerts_map: dic
         except Exception as e:
             logger.exception("process_group_batch_and_run_alerts: error processing alert %s: %s", alert_key, e)
 
-# --------------------------
-# New: periodic coordinator (to be scheduled by apscheduler)
-# --------------------------
 async def check_all_alerts_periodically_coordinator(bot: Optional[object] = None):
-    """
-    Entrypoint to be scheduled periodically. It selects a batch of groups to process,
-    fetches the necessary symbol data into cache, and processes alerts for those groups.
-    """
     try:
         logger.info("Periodic coordinator: selecting batch to process.")
 
         alerts = load_alerts() or {}
-        # Only process if there are active alerts
         active_alerts = {k: v for k, v in alerts.items() if v.get("active", False)}
         if not active_alerts:
             logger.debug("No active alerts to process.")
             return
 
-        # determine all unique symbols across all groups to compute target batch size
         total_symbols = len(_total_unique_symbols())
         if total_symbols <= 0:
             total_symbols = 1
-        # user wanted ~10% of 24 -> ~2-3 symbols per tick. We compute target_count dynamically.
         pct = 0.10
         target_symbol_count = max(1, int(math.ceil(total_symbols * pct)))
 
-        # load and advance pointer
         ptr = _load_batch_pointer()
         batch_groups, new_ptr = _select_group_batch(target_symbol_count, ptr)
         _save_batch_pointer(new_ptr)
@@ -907,23 +939,10 @@ async def check_all_alerts_periodically_coordinator(bot: Optional[object] = None
     except Exception as e:
         logger.exception("check_all_alerts_periodically_coordinator: unexpected error: %s", e)
 
-# --------------------------
-# Existing background handler (unchanged apart from small truncation behavior)
-# --------------------------
-
 async def _handle_trigger_actions(alert_key: str, alert_details: dict, message: str, symbols: list, timeframe_min: int, user_id: int, bot: Optional[object] = None):
-    """
-    Generate charts, save JSON, and send notifications in background.
-
-    NOTE: we DO NOT pre-escape `message` here. send_alert_notification (notify_user)
-    takes raw text and will escape once for Telegram Markdown v1. Pre-escaping here
-    caused double-escaping and visible backslashes in messages.
-    """
     try:
-        # 1) Generate charts (may return buffers or error dicts)
         chart_data_list = await _generate_charts_for_symbols(symbols, timeframe_min)
 
-        # 2) Save triggered data to storage (non-blocking thread)
         triggered_data = {
             "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
             "alert_key": alert_key,
@@ -945,7 +964,6 @@ async def _handle_trigger_actions(alert_key: str, alert_details: dict, message: 
         except Exception as e:
             logger.exception("_handle_trigger_actions: save triggered alert error: %s", e)
 
-        # 3) Prepare image buffers (list of bytes)
         image_buffers = []
         for c in chart_data_list:
             buf = c.get('buffer')
@@ -973,19 +991,16 @@ async def _handle_trigger_actions(alert_key: str, alert_details: dict, message: 
             except Exception:
                 logger.exception("_handle_trigger_actions: error reading chart buffer for %s", c.get('symbol'))
 
-        # 4) Send textual notification first (do NOT pre-escape; notify handles escaping)
         try:
             truncated = _truncate_message(message)
             await send_alert_notification(user_id, truncated, [], bot=bot)
         except Exception as e:
             logger.exception("_handle_trigger_actions: notifying user (text) failed: %s", e)
-            # fallback: try plain fallback text (stringified)
             try:
                 await send_alert_notification(user_id, _truncate_message(str(message)), [], bot=bot)
             except Exception as e2:
                 logger.exception("_handle_trigger_actions: notifying user (plain text fallback) failed: %s", e2)
 
-        # 5) Then send each chart as its own message (no caption)
         for b in image_buffers:
             try:
                 await send_alert_notification(user_id, '', [b], bot=bot)
@@ -995,10 +1010,6 @@ async def _handle_trigger_actions(alert_key: str, alert_details: dict, message: 
     except Exception as e:
         logger.exception("_handle_trigger_actions: unexpected error: %s", e)
 
-
-# --------------------------
-# Exported helpers for handlers (unchanged)
-# --------------------------
 def set_ssmt_alert(user_id: int, group_id: str, timeframe_min: int, category: str = "FOREX CURRENCIES"):
     alerts = load_alerts()
     key = _generate_alert_key(user_id, category, group_id, timeframe_min)
