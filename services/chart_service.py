@@ -18,7 +18,7 @@ import matplotlib
 matplotlib.use("Agg")   # use non-GUI backend so Tkinter is never involved
 # ==========================================================================
 
-# Added for stacking output images
+# Pillow for image stacking
 from PIL import Image
 
 logger = logging.getLogger("services.chart_service")
@@ -34,16 +34,9 @@ TRUEOPEN_COLOR = "C6"
 TRUEOPEN_STYLE = "--"
 # ---------------------------
 
+
 def _parse_datetimes_to_utc(series: pd.Series, source_tz=SOURCE_TZ) -> pd.Series:
-    """
-    Deterministic parsing:
-      - epoch numbers -> detect seconds vs milliseconds then localize to source_tz then convert to UTC
-      - naive datetimes -> localize to source_tz then convert to UTC
-      - tz-aware datetimes -> convert to UTC
-    Returns tz-aware UTC Series.
-    """
     if pd.api.types.is_integer_dtype(series) or pd.api.types.is_float_dtype(series):
-        # detect seconds vs milliseconds
         try:
             non_na = series.dropna()
             maxv = int(non_na.max()) if not non_na.empty else 0
@@ -71,11 +64,6 @@ def _parse_datetimes_to_utc(series: pd.Series, source_tz=SOURCE_TZ) -> pd.Series
 def _quarter_boundaries_utc_for_index(index: pd.DatetimeIndex,
                                       local_offset_minutes: int = LOCAL_OFFSET_MINUTES,
                                       tz_name: str = LOCAL_TZ_NAME) -> List[pd.Timestamp]:
-    """
-    Build 15m-quarter boundaries in local tz (Asia/Tehran = UTC+3:30) at:
-       01:30, 07:30, 13:30, 19:30 and next-day 01:30
-    Return tz-aware UTC pandas.Timestamp list.
-    """
     if index is None or index.empty:
         return []
 
@@ -106,7 +94,6 @@ def _quarter_boundaries_utc_for_index(index: pd.DatetimeIndex,
             except Exception:
                 local_dt = dt.datetime(year=day.year, month=day.month, day=day.day, hour=hh, minute=mm, tzinfo=local_tz)
                 boundaries_utc.append(pd.Timestamp(local_dt.astimezone(dateutil_tz.tzutc())))
-        # Also append next-day 01:30 to close the last quarter
         nd = day + pd.Timedelta(days=1)
         try:
             local_next = pd.Timestamp(year=nd.year, month=nd.month, day=nd.day, hour=1, minute=30, tz=idx_local.tz)
@@ -122,30 +109,18 @@ def _quarter_boundaries_utc_for_index(index: pd.DatetimeIndex,
 def _five_minute_boundaries_utc_for_index(index: pd.DatetimeIndex,
                                           local_offset_minutes: int = LOCAL_OFFSET_MINUTES,
                                           tz_name: str = LOCAL_TZ_NAME) -> List[pd.Timestamp]:
-    """
-    Build 5m-quarter boundaries (90-minute steps) based on 15m quarters:
-      For each 15m quarter (start -> next_start) generate:
-        start + 0min, start + 90min, start + 180min, start + 270min, (the next_start is already included)
-    Each returned timestamp is tz-aware UTC pandas.Timestamp.
-
-    NOTE: although this function is named for 5m support, it returns 90-minute boundaries
-    which represent the 5m-quarter divisions (each 90-minute block contains 18 x 5m candles).
-    """
     if index is None or index.empty:
         return []
 
-    # Ensure index is UTC-aware
     if index.tz is None:
         idx_utc = index.tz_localize("UTC")
     else:
         idx_utc = index.tz_convert("UTC")
 
-    # get 15m quarter boundaries in UTC first
     quarter_boundaries = _quarter_boundaries_utc_for_index(index, local_offset_minutes=local_offset_minutes, tz_name=tz_name)
     if not quarter_boundaries:
         return []
 
-    # convert to local tz for arithmetic
     try:
         local_tz = dateutil_tz.gettz(tz_name)
         local_quarters = [qb.tz_convert(tz_name) for qb in quarter_boundaries]
@@ -160,28 +135,20 @@ def _five_minute_boundaries_utc_for_index(index: pd.DatetimeIndex,
 
     five_min_boundaries_local = []
 
-    # For each consecutive pair of 15m quarter boundaries, produce four 90-minute steps
     for i in range(len(local_quarters) - 1):
         start = local_quarters[i]
         end = local_quarters[i + 1]
-        # duration of a quarter is expected to be 6 hours (360 minutes)
-        # create boundaries at start + k*90 minutes for k=0..3
         for k in range(4):
             ts_local = start + pd.Timedelta(minutes=90 * k)
-            # only include if within [start, end]
             if ts_local >= start and ts_local <= end:
                 five_min_boundaries_local.append(ts_local)
-        # we do NOT append end here because the next iteration's start equals end (except final)
-    # append final quarter end (last element of local_quarters) so boundaries are closed
     five_min_boundaries_local.append(local_quarters[-1])
 
-    # convert back to UTC and dedupe/sort
     boundaries_utc = []
     for ts in five_min_boundaries_local:
         try:
             boundaries_utc.append(ts.tz_convert("UTC"))
         except Exception:
-            # fallback convert
             boundaries_utc.append(pd.Timestamp(ts).tz_localize(local_tz).tz_convert("UTC"))
 
     boundaries_utc = sorted(list(dict.fromkeys(boundaries_utc)))
@@ -191,11 +158,6 @@ def _five_minute_boundaries_utc_for_index(index: pd.DatetimeIndex,
 def _hour_boundaries_utc_for_index(index: pd.DatetimeIndex,
                                    local_offset_minutes: int = LOCAL_OFFSET_MINUTES,
                                    tz_name: str = LOCAL_TZ_NAME) -> List[pd.Timestamp]:
-    """
-    Build hour boundaries in local tz (Asia/Tehran = UTC+3:30) for weekly quarters:
-       MON = Q1, TUE = Q2, WED = Q3, THU = Q4
-    Return tz-aware UTC pandas.Timestamp list.
-    """
     if index is None or index.empty:
         return []
 
@@ -210,17 +172,13 @@ def _hour_boundaries_utc_for_index(index: pd.DatetimeIndex,
         local_tz = dateutil_tz.tzoffset(None, local_offset_minutes * 60)
         idx_local = idx_utc.tz_convert(local_tz)
 
-    # Expand range to ensure we capture all boundaries
     start_local = idx_local.min() - pd.Timedelta(days=7)
     end_local = idx_local.max() + pd.Timedelta(days=7)
-    # Generate all dates in the range
     dates = pd.date_range(start=start_local.normalize(), end=end_local.normalize(), freq="D", tz=idx_local.tz)
     boundaries_utc = []
-    # Only consider Monday through Thursday
     for date in dates:
-        weekday = date.weekday()  # Monday=0, Sunday=6
-        if weekday in [0, 1, 2, 3]:  # MON, TUE, WED, THU
-            # Set time to 00:00 in local time
+        weekday = date.weekday()
+        if weekday in [0, 1, 2, 3]:
             try:
                 local_boundary = date.normalize()
                 boundaries_utc.append(local_boundary.tz_convert("UTC"))
@@ -234,11 +192,6 @@ def _hour_boundaries_utc_for_index(index: pd.DatetimeIndex,
 def _day_boundaries_utc_for_index(index: pd.DatetimeIndex,
                                   local_offset_minutes: int = LOCAL_OFFSET_MINUTES,
                                   tz_name: str = LOCAL_TZ_NAME) -> List[pd.Timestamp]:
-    """
-    Build day boundaries in local tz (Asia/Tehran = UTC+3:30) for monthly quarters:
-       WEEK1 = Q1, WEEK2 = Q2, WEEK3 = Q3, WEEK4 = Q4
-    Return tz-aware UTC pandas.Timestamp list.
-    """
     if index is None or index.empty:
         return []
 
@@ -253,15 +206,12 @@ def _day_boundaries_utc_for_index(index: pd.DatetimeIndex,
         local_tz = dateutil_tz.tzoffset(None, local_offset_minutes * 60)
         idx_local = idx_utc.tz_convert(local_tz)
 
-    # Expand range to ensure we capture all boundaries
     start_local = idx_local.min() - pd.Timedelta(days=30)
     end_local = idx_local.max() + pd.Timedelta(days=30)
-    # Generate week boundaries (start of each week, Monday)
     boundaries_utc = []
     current = start_local.normalize()
     while current <= end_local:
-        # If this is a Monday, it's a week boundary
-        if current.weekday() == 0:  # Monday
+        if current.weekday() == 0:
             try:
                 local_boundary = current.normalize()
                 boundaries_utc.append(local_boundary.tz_convert("UTC"))
@@ -282,16 +232,6 @@ def _get_main_ax_from_mpf_axes(axes):
 
 
 def _quarter_index_from_boundary(boundary_utc: pd.Timestamp, tz_name: str = LOCAL_TZ_NAME, timeframe: int = 15) -> int:
-    """
-    Given a boundary timestamp in UTC, return the quarter index (0..3) based
-    on its local time in tz_name (Asia/Tehran) and the timeframe.
-
-    For 5m:  each 15m-quarter is divided into four 90-minute segments:
-           q1 = start + 0..90min, q2 = start+90..start+180, ...
-    For 15m: Q1=01:30, Q2=07:30, Q3=13:30, Q4=19:30
-    For 1h:  Q1=MON, Q2=TUE, Q3=WED, Q4=THU
-    For 4h:  Q1=WEEK1, Q2=WEEK2, Q3=WEEK3, Q4=WEEK4
-    """
     if boundary_utc is None:
         return 0
 
@@ -303,7 +243,6 @@ def _quarter_index_from_boundary(boundary_utc: pd.Timestamp, tz_name: str = LOCA
         local = b_utc.tz_convert(tz_name)
 
         if timeframe == 5:
-            # Determine which 90-minute segment within the 15m quarter
             h = local.hour
             m = local.minute
             mins = h * 60 + m
@@ -323,7 +262,6 @@ def _quarter_index_from_boundary(boundary_utc: pd.Timestamp, tz_name: str = LOCA
             else:
                 quarter_start = q4_start
 
-            # segment: 0..3 each = 90 minutes
             segment_position = (mins - quarter_start) // 90
             return int(segment_position % 4)
 
@@ -346,13 +284,13 @@ def _quarter_index_from_boundary(boundary_utc: pd.Timestamp, tz_name: str = LOCA
 
         elif timeframe == 60:
             weekday = local.weekday()
-            if weekday == 0:  # Monday
+            if weekday == 0:
                 return 0
-            elif weekday == 1:  # Tuesday
+            elif weekday == 1:
                 return 1
-            elif weekday == 2:  # Wednesday
+            elif weekday == 2:
                 return 2
-            elif weekday == 3:  # Thursday
+            elif weekday == 3:
                 return 3
             else:
                 return 3
@@ -371,12 +309,6 @@ def _quarter_index_from_boundary(boundary_utc: pd.Timestamp, tz_name: str = LOCA
 def _set_xaxis_labels_in_local_tz(ax, df_index: pd.DatetimeIndex,
                                  local_tz_offset_minutes: int = LOCAL_OFFSET_MINUTES,
                                  fmt: str = "%b %d %H:%M", tz_name: str = LOCAL_TZ_NAME):
-    """
-    Robustly set x-axis labels converting ticks to local tz (Asia/Tehran).
-    Priority:
-      1. Interpret tick as matplotlib date number -> convert -> local tz
-      2. Fallback: if tick looks like an integer index, map to df_index (candle position)
-    """
     try:
         local_tz = dateutil_tz.gettz(tz_name) or dateutil_tz.tzoffset(None, local_tz_offset_minutes * 60)
     except Exception:
@@ -416,7 +348,6 @@ def _set_xaxis_labels_in_local_tz(ax, df_index: pd.DatetimeIndex,
 async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.BytesIO]:
     chart_buffers: List[io.BytesIO] = []
 
-    # Set time range based on timeframe
     to_date = int(time.time())
     if timeframe == 5:
         from_date = to_date - 0.3 * 24 * 60 * 60
@@ -429,9 +360,8 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
     else:
         from_date = to_date - 3 * 24 * 60 * 60
 
-    # choose tolerance per timeframe: much smaller for 5m because boundaries are 90min apart
     if timeframe == 5:
-        tol = pd.Timedelta(minutes=45)   # accept nearest candle up to 45 minutes away
+        tol = pd.Timedelta(minutes=45)
     elif timeframe == 15:
         tol = pd.Timedelta(minutes=60)
     else:
@@ -467,7 +397,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
             else:
                 df.index = df.index.tz_convert("UTC")
 
-            # Compute boundaries based on timeframe
             if timeframe == 5:
                 boundaries = _five_minute_boundaries_utc_for_index(df.index, local_offset_minutes=LOCAL_OFFSET_MINUTES, tz_name=LOCAL_TZ_NAME)
             elif timeframe == 15:
@@ -481,7 +410,7 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
 
             filtered_boundaries = [b for b in boundaries if (b >= (df.index.min() - tol) and b <= (df.index.max() + tol))]
 
-            fig, axes = mpf.plot(df, type="candle", style="yahoo", ylabel="Price", figsize=(16, 9), volume=False, returnfig=True)
+            fig, axes = mpf.plot(df, type="candle", style="yahoo", ylabel="Price", figsize=(18, 9), volume=False, returnfig=True)
             main_ax = _get_main_ax_from_mpf_axes(axes)
 
             rects = []
@@ -522,10 +451,12 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 except Exception as ex:
                     logger.debug("Failed to map boundary %r: %s", b, ex)
 
+            # Draw vertical quarter dividers (more obvious now)
             for idx_b, b in enumerate(good_boundaries):
                 try:
                     xcoord = x_coords_for_boundaries[idx_b]
-                    main_ax.axvline(x=xcoord, linestyle="--", linewidth=0.8, alpha=0.8, color="C1")
+                    # make vertical divider more noticeable
+                    main_ax.axvline(x=xcoord, linestyle="--", linewidth=1.2, alpha=0.95, color="C1", zorder=1)
                 except Exception as ex:
                     logger.debug("Failed to draw vertical for %r: %s", b, ex)
 
@@ -549,7 +480,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
             interval_low_ts = []
             interval_open_ts = []
 
-            # intervals correspond to pairs of consecutive good_boundaries: [b0->b1, b1->b2, ...]
             for i in range(max(0, len(good_boundaries) - 1)):
                 start_b = good_boundaries[i]
                 end_b = good_boundaries[i + 1]
@@ -595,11 +525,9 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                     interval_low_ts.append(None)
                     interval_open_ts.append(None)
 
-            # Pre-compute quarter index for each good boundary based on timeframe
             boundary_quarter_idx = [_quarter_index_from_boundary(b, tz_name=LOCAL_TZ_NAME, timeframe=timeframe) for b in good_boundaries]
 
-            # --- FIXED: iterate all intervals and extend to last-1 candle if next boundary not available ---
-            # Determine coordinate for last-1 candle (candle -1) — used by true-open extension
+            # Determine last-1 coordinate (used for true-open fallback)
             last_minus_one_pos = (len(df) - 2) if len(df) >= 2 else None
             last_minus_one_x = None
             if last_minus_one_pos is not None:
@@ -608,17 +536,25 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 else:
                     last_minus_one_x = float(last_minus_one_pos)
 
-            # NEW: compute coordinate for "last candle + 5" — used ONLY for high/low extension
+            # NEW: extend previous HLs to last candle + 10 (user requested +10)
             last_pos = (len(df) - 1) if len(df) >= 1 else None
-            last_plus_five_x = None
+            last_plus_ten_x = None
             if last_pos is not None:
                 if used_x_centers and last_pos < len(used_x_centers):
-                    # add 5 units to the x coordinate to extend beyond last candle
-                    last_plus_five_x = used_x_centers[last_pos] + 5.0
+                    last_plus_ten_x = used_x_centers[last_pos] + 10.0
                 else:
-                    last_plus_five_x = float(last_pos) + 5.0
+                    last_plus_ten_x = float(last_pos) + 10.0
 
-            # interval_count = number of computed intervals
+            # compute hl padding (so HLs don't exactly touch candle centers)
+            try:
+                if used_x_centers and len(used_x_centers) >= 2:
+                    candle_spacing = used_x_centers[1] - used_x_centers[0]
+                else:
+                    candle_spacing = 1.0
+                hl_pad = max(candle_spacing * 0.12, 0.2)
+            except Exception:
+                hl_pad = 0.3
+
             interval_count = len(interval_highs)
 
             for j in range(interval_count):
@@ -629,14 +565,11 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 q_idx = boundary_quarter_idx[j] if j < len(boundary_quarter_idx) else (j % 4)
                 q_color = QUARTER_COLORS[q_idx % 4]
 
-                # Attempt to compute xend: prefer the boundary 2 ahead (original behavior),
-                # but if it's not available (new quarter not formed), fall back to last-1 candle.
                 xend = None
                 try:
                     if (j + 2) < len(x_coords_for_boundaries):
                         xend = x_coords_for_boundaries[j + 2]
                     else:
-                        # fallback to nearest-pos of good_boundaries[j+2] if present but not in x_coords_for_boundaries
                         try:
                             pos_end = df.index.get_indexer([pd.Timestamp(good_boundaries[j + 2])], method="nearest")[0]
                             if pos_end != -1:
@@ -646,10 +579,9 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 except Exception:
                     xend = None
 
-                # If still no xend and there are fewer than expected boundaries (i.e. new quarter not formed),
-                # extend high/low lines to last candle + 5 (only for HL).
+                # fallback for HLs -> last candle + 10
                 if xend is None:
-                    xend = last_plus_five_x
+                    xend = last_plus_ten_x
 
                 def _ts_to_x(ts_val):
                     if ts_val is None:
@@ -679,38 +611,38 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                         xstart_l = None
 
                 try:
-                    # Only draw if we have necessary coordinates and values
                     if prev_h is not None and xstart_h is not None and xend is not None:
-                        main_ax.hlines(y=float(prev_h), xmin=xstart_h, xmax=xend, linewidth=0.9, colors=q_color, linestyle="-", alpha=0.9, zorder=2)
+                        xmin = xstart_h + hl_pad
+                        xmax = xend - hl_pad if xend is not None else xend
+                        if xmax is None or xmax <= xmin:
+                            xmax = xend
+                        main_ax.hlines(y=float(prev_h), xmin=xmin, xmax=xmax, linewidth=1.0, colors=q_color, linestyle="-", alpha=0.95, zorder=3)
                     if prev_l is not None and xstart_l is not None and xend is not None:
-                        main_ax.hlines(y=float(prev_l), xmin=xstart_l, xmax=xend, linewidth=0.9, colors=q_color, linestyle="-", alpha=0.9, zorder=2)
+                        xmin = xstart_l + hl_pad
+                        xmax = xend - hl_pad if xend is not None else xend
+                        if xmax is None or xmax <= xmin:
+                            xmax = xend
+                        main_ax.hlines(y=float(prev_l), xmin=xmin, xmax=xmax, linewidth=1.0, colors=q_color, linestyle="-", alpha=0.95, zorder=3)
                 except Exception as ex:
                     logger.debug("Failed to draw prev-quarter HL for %s interval %d: %s", norm_symbol, j, ex)
-            # --- end FIX ---
+
+            # Draw true-open lines (unchanged behavior, fallback to last-1)
             if open_col is None:
                 logger.debug("[ChartService] Open column not found for %s; skipping true-open lines", norm_symbol)
             else:
                 n_bounds = len(good_boundaries)
-
-                # --- Draw true-open lines starting from the open of the FIRST candle of each Q2 ---
-                # For an interval i that represents [good_boundaries[i] -> good_boundaries[i+1]],
-                # we treat its 'quarter' as boundary_quarter_idx[i]. We want intervals where that == 1 (Q2).
                 try:
                     for i in range(0, max(0, n_bounds - 1)):
                         try:
                             if i >= len(boundary_quarter_idx):
-                                # If we don't have a precomputed quarter idx for this boundary, skip
                                 continue
                             if boundary_quarter_idx[i] != 1:
-                                # only start windows when the interval is Q2
                                 continue
 
-                            # Get open timestamp for this interval (first candle in the interval)
                             open_ts = interval_open_ts[i] if i < len(interval_open_ts) else None
                             open_price = None
                             xstart = None
 
-                            # Primary: use the interval's first-candle timestamp
                             if open_ts is not None:
                                 try:
                                     pos_open = df.index.get_indexer([pd.Timestamp(open_ts)], method="nearest")[0]
@@ -721,7 +653,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                                     open_price = None
                                     xstart = None
 
-                            # Fallback: use the boundary position at good_boundaries[i] (nearest candle to boundary)
                             if (open_price is None or xstart is None) and i < len(good_boundaries):
                                 try:
                                     pos_left = df.index.get_indexer([pd.Timestamp(good_boundaries[i])], method="nearest")[0]
@@ -732,16 +663,13 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                                     pass
 
                             if open_price is None or xstart is None:
-                                # cannot draw without an open price and xstart
                                 continue
 
-                            # Compute xend = boundary at i+3 (the start of next Q1 after Q4)
                             xend = None
                             end_boundary_idx = i + 3
                             if end_boundary_idx < len(x_coords_for_boundaries):
                                 xend = x_coords_for_boundaries[end_boundary_idx]
                             else:
-                                # try to find nearest candle to good_boundaries[end_boundary_idx] if boundary exists but not mapped to x_coords
                                 if end_boundary_idx < len(good_boundaries):
                                     try:
                                         pos_end = df.index.get_indexer([pd.Timestamp(good_boundaries[end_boundary_idx])], method="nearest")[0]
@@ -750,11 +678,9 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                                     except Exception:
                                         xend = None
 
-                            # If the full Q2->Q4 window is not available (quarters not formed), extend to last-1 candle
                             if xend is None:
                                 xend = last_minus_one_x
 
-                            # only draw if we have both xstart and xend
                             if xstart is not None and xend is not None:
                                 try:
                                     main_ax.hlines(y=float(open_price), xmin=xstart, xmax=xend, linewidth=1.0,
@@ -766,11 +692,10 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 except Exception as ex:
                     logger.debug("True-open drawing logic failed for %s: %s", norm_symbol, ex)
 
-                # --- Extend the most recent incomplete true-open only if that open is in Q2 ---
+                # extend most recent incomplete true-open only if it's Q2
                 try:
                     if len(interval_open_ts) > 0 and last_minus_one_x is not None:
                         candidate_interval_idx = len(interval_open_ts) - 1
-                        # Determine quarter of that candidate open
                         q_candidate = None
                         if candidate_interval_idx < len(boundary_quarter_idx):
                             q_candidate = boundary_quarter_idx[candidate_interval_idx]
@@ -782,7 +707,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                             except Exception:
                                 q_candidate = None
 
-                        # Only extend/draw if candidate is Q2
                         if q_candidate == 1:
                             open_ts = interval_open_ts[candidate_interval_idx]
                             open_price = None
@@ -797,7 +721,6 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                                     open_price = None
                                     xstart = None
 
-                            # fallback: boundary position
                             if (open_price is None or xstart is None) and candidate_interval_idx < len(good_boundaries):
                                 try:
                                     pos_left = df.index.get_indexer([pd.Timestamp(good_boundaries[candidate_interval_idx])], method="nearest")[0]
@@ -816,40 +739,91 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                                     logger.debug("Failed to draw extended true-open for %s: %s", norm_symbol, ex)
                 except Exception as ex:
                     logger.debug("True-open extension logic failed for %s: %s", norm_symbol, ex)
-                    # --- end NEW ---
 
-            if x_coords_for_boundaries and len(x_coords_for_boundaries) >= 2:
-                try:
-                    y_min, y_max = main_ax.get_ylim()
-                    y_for_label = y_max - (y_max - y_min) * 0.03
-                except Exception:
-                    y_for_label = None
-
-                quarter_names = ["Q1", "Q2", "Q3", "Q4"]
-                for i in range(len(x_coords_for_boundaries) - 1):
-                    x_left = x_coords_for_boundaries[i]
-                    x_right = x_coords_for_boundaries[i + 1]
-                    x_label = (x_left + x_right) / 2.0
-                    q_idx = boundary_quarter_idx[i] if i < len(boundary_quarter_idx) else (i % 4)
-                    qname = quarter_names[q_idx % 4]
-                    try:
-                        if y_for_label is None:
-                            main_ax.text(x_label, 0.98, qname, transform=main_ax.get_xaxis_transform(), ha="center", va="top", fontsize=9, bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.6, edgecolor="none"))
-                        else:
-                            main_ax.text(x_label, y_for_label, qname, ha="center", va="top", fontsize=9, bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.6, edgecolor="none"))
-                    except Exception as ex:
-                        logger.debug("Failed to draw quarter label %s at x=%r: %s", qname, x_label, ex)
-
+            # Presentation tweaks: vertical padding (reduced), grid, annotate recent HLs, quarter labels, legend
             try:
-                _set_xaxis_labels_in_local_tz(main_ax, df.index, local_tz_offset_minutes=LOCAL_OFFSET_MINUTES, fmt="%b %d %H:%M", tz_name=LOCAL_TZ_NAME)
-            except Exception as ex:
-                logger.debug("Failed to set x-axis labels in local tz for %s: %s", norm_symbol, ex)
+                y_min, y_max = main_ax.get_ylim()
+                # reduce padding from 6% to 3% to avoid too much top margin
+                margin = (y_max - y_min) * 0.03
+                main_ax.set_ylim(y_min - margin, y_max + margin)
+            except Exception:
+                pass
+
+            main_ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.30)
+
+            # annotate most recent interval HLs (if any)
+            try:
+                if interval_count > 0:
+                    k = interval_count - 1
+                    label_x = last_plus_ten_x if last_plus_ten_x is not None else (len(df) - 1)
+                    if interval_highs[k] is not None:
+                        main_ax.text(label_x + max(0.6, hl_pad * 2), float(interval_highs[k]),
+                                     f"{float(interval_highs[k]):.4f}",
+                                     va="center", fontsize=9,
+                                     bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8, edgecolor="none"))
+                    if interval_lows[k] is not None:
+                        main_ax.text(label_x + max(0.6, hl_pad * 2), float(interval_lows[k]),
+                                     f"{float(interval_lows[k]):.4f}",
+                                     va="center", fontsize=9,
+                                     bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8, edgecolor="none"))
+            except Exception:
+                pass
+
+            # draw quarter labels with boxed background and stronger visibility
+            try:
+                if x_coords_for_boundaries and len(x_coords_for_boundaries) >= 2:
+                    quarter_names = ["Q1", "Q2", "Q3", "Q4"]
+                    for i in range(len(x_coords_for_boundaries) - 1):
+                        x_left = x_coords_for_boundaries[i]
+                        x_right = x_coords_for_boundaries[i + 1]
+                        x_label = (x_left + x_right) / 2.0
+                        q_idx = boundary_quarter_idx[i] if i < len(boundary_quarter_idx) else (i % 4)
+                        qname = quarter_names[q_idx % 4]
+                        box_edge = QUARTER_COLORS[q_idx % 4]
+                        try:
+                            y_for_label = None
+                            try:
+                                y_min2, y_max2 = main_ax.get_ylim()
+                                y_for_label = y_max2 - (y_max2 - y_min2) * 0.03
+                            except Exception:
+                                y_for_label = None
+                            if y_for_label is None:
+                                main_ax.text(x_label, 0.98, qname, transform=main_ax.get_xaxis_transform(),
+                                             ha="center", va="top", fontsize=10,
+                                             bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9, edgecolor=box_edge))
+                            else:
+                                main_ax.text(x_label, y_for_label, qname, ha="center", va="top", fontsize=10,
+                                             bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9, edgecolor=box_edge))
+                        except Exception as ex:
+                            logger.debug("Failed to draw quarter label %s at x=%r: %s", qname, x_label, ex)
+            except Exception:
+                pass
+
+            # small legend
+            try:
+                legend_items = [
+                    mpatches.Patch(color=QUARTER_COLORS[0], label="Quarter HL (Q1)"),
+                    mpatches.Patch(color=QUARTER_COLORS[1], label="Quarter HL (Q2)"),
+                    mpatches.Patch(color=TRUEOPEN_COLOR, label="True Open")
+                ]
+                main_ax.legend(handles=legend_items, loc="upper left", fontsize=9, framealpha=0.85)
+            except Exception:
+                pass
+
+            # set title centered over the plotting axes (so it visually centers above the candles)
+            try:
+                main_ax.set_title(f"{norm_symbol} - {timeframe}min", fontsize=12, color="gray", pad=14)
+            except Exception:
+                try:
+                    # fallback to figure-level if axes-level fails
+                    fig.suptitle(f"{norm_symbol} - {timeframe}min", fontsize=12, color="gray", alpha=0.6)
+                except Exception:
+                    pass
 
             if fig is not None:
-                fig.suptitle(f"{norm_symbol} - {timeframe}min", fontsize=12, color="gray", alpha=0.6)
-                # Use subplots_adjust instead of tight_layout to avoid warnings
+                # tighten subplot top so title is closer to plot and reduce empty space
                 try:
-                    fig.subplots_adjust(top=0.94, bottom=0.1, left=0.05, right=0.95, hspace=0.2, wspace=0.2)
+                    fig.subplots_adjust(top=0.95, bottom=0.08, left=0.05, right=0.95, hspace=0.2, wspace=0.2)
                 except Exception:
                     pass
                 buf = io.BytesIO()
@@ -865,7 +839,7 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                 if fig is not None:
                     plt.close(fig)
 
-    # --- Optional: create a single stacked image containing all generated charts ---
+    # Stack generated images vertically and append combined image as last buffer
     try:
         if chart_buffers and len(chart_buffers) > 0:
             pil_imgs = []
@@ -874,27 +848,25 @@ async def generate_chart(symbols: List[str], timeframe: int = 15) -> List[io.Byt
                     b.seek(0)
                     pil_imgs.append(Image.open(io.BytesIO(b.getvalue())).convert("RGBA"))
                 except Exception:
-                    # skip any buffer we cannot open
                     continue
 
             if pil_imgs:
+                pad = 8  # pixels between images
                 max_w = max(img.width for img in pil_imgs)
-                total_h = sum(img.height for img in pil_imgs)
+                total_h = sum(img.height for img in pil_imgs) + pad * (len(pil_imgs) - 1)
 
                 stacked = Image.new("RGBA", (max_w, total_h), (255, 255, 255, 255))
                 y = 0
                 for img in pil_imgs:
                     x = (max_w - img.width) // 2
                     stacked.paste(img, (x, y), img if img.mode == "RGBA" else None)
-                    y += img.height
+                    y += img.height + pad
 
                 combined_buf = io.BytesIO()
                 stacked.save(combined_buf, format="PNG")
                 combined_buf.seek(0)
-                # append combined image as the last item
                 chart_buffers.append(combined_buf)
     except Exception as ex:
         logger.debug("Failed to create stacked combined image: %s", ex)
-    # --- end stacking ---
 
     return chart_buffers
