@@ -493,6 +493,13 @@ def _check_single_quarter_pair(q1_q2_data: dict, group_id: str, group_type: str,
             q1_idx = _quarter_index_from_boundary(q1_end_time_utc, timeframe=timeframe_min)
             q2_idx = (q1_idx + 1) % 4
 
+        # --- NEW: do not trigger on wrap-around transitions Q4 -> Q1 ---
+        # Allowed transitions: Q1->Q2 (0->1), Q2->Q3 (1->2), Q3->Q4 (2->3)
+        # Disallow: Q4->Q1 (3->0)
+        if q1_idx == 3 and q2_idx == 0:
+            logger.debug("_check_single_quarter_pair: skipping wrap-around transition Q4->Q1 for primary %s", primary_symbol)
+            return False, None, None
+
         q1_label = f"Q{q1_idx + 1}"
         q2_label = f"Q{q2_idx + 1}"
 
