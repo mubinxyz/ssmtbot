@@ -890,6 +890,37 @@ async def process_group_batch_and_run_alerts(batch_groups: list, alerts_map: dic
 
             for (is_triggered, message, q2_end_time_utc) in triggered_results:
                 if is_triggered and message:
+                    # ----- NEW: ensure we only trigger on fully closed q2 bars and skip if already triggered for same/older bar -----
+                    q2_ts = None
+                    if q2_end_time_utc is not None:
+                        try:
+                            q2_ts = int(pd.to_datetime(q2_end_time_utc, utc=True).timestamp())
+                        except Exception:
+                            q2_ts = None
+
+                    now_utc_ts = int(datetime.now(timezone.utc).timestamp())
+
+                    # if q2 timestamp exists, require it to be strictly < now (fully closed). If it's equal/greater, skip.
+                    if q2_ts is not None:
+                        if q2_ts >= now_utc_ts:
+                            logger.info("Skipping trigger for %s because q2 bar (%s) is not yet closed (now %s)", alert_key, q2_ts, now_utc_ts)
+                            continue
+
+                    alerts_current = load_alerts()
+                    current_entry = alerts_current.get(alert_key, {})
+
+                    # If we have a stored last_triggered_bar_ts, skip if we already triggered for this bar or a newer one.
+                    last_bar_ts = current_entry.get("last_triggered_bar_ts")
+                    if last_bar_ts is not None and q2_ts is not None:
+                        try:
+                            last_bar_ts_int = int(last_bar_ts)
+                        except Exception:
+                            last_bar_ts_int = None
+                        if last_bar_ts_int is not None and q2_ts <= last_bar_ts_int:
+                            logger.info("Skipping trigger for %s because it was already triggered for bar %s (current q2 %s)", alert_key, last_bar_ts_int, q2_ts)
+                            continue
+
+                    # compute a human quarter key (optional guard)
                     quarter_key = None
                     try:
                         if q2_end_time_utc is not None:
@@ -904,13 +935,7 @@ async def process_group_batch_and_run_alerts(batch_groups: list, alerts_map: dic
                     except Exception:
                         quarter_key = None
 
-                    alerts_current = load_alerts()
-                    current_entry = alerts_current.get(alert_key, {})
-                    last_quarter = current_entry.get("last_trigger_quarter")
-                    if last_quarter is not None and quarter_key is not None and last_quarter == quarter_key:
-                        logger.info("Skipping trigger for %s because it already fired in same quarter %s", alert_key, quarter_key)
-                        continue
-
+                    # existing duplicate-sig check remains (defensive)
                     if q2_end_time_utc is not None:
                         try:
                             sig = f"bar:{int(pd.to_datetime(q2_end_time_utc, utc=True).timestamp())}"
@@ -924,13 +949,18 @@ async def process_group_batch_and_run_alerts(batch_groups: list, alerts_map: dic
                         logger.info("Skipping duplicate trigger for %s sig=%s", alert_key, sig)
                         continue
 
+                    # Persist trigger metadata: signature + last_triggered_bar_ts + optionally quarter
                     current_entry['last_trigger_signature'] = sig
+                    if q2_ts is not None:
+                        current_entry['last_triggered_bar_ts'] = int(q2_ts)
                     if quarter_key is not None:
+                        # only set last_trigger_quarter if not set to same - we still store it for convenience
                         current_entry['last_trigger_quarter'] = quarter_key
                     current_entry['updated_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
                     alerts_current[alert_key] = current_entry
                     save_alerts(alerts_current)
 
+                    # schedule trigger handler
                     bg_name = f"trigger_handler::{alert_key}"
                     try:
                         _schedule_background_task(_handle_trigger_actions(alert_key, alert, message, symbols, timeframe_min, user_id, bot=bot), bg_name)
