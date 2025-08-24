@@ -268,14 +268,14 @@ def main():
     app.add_handler(CallbackQueryHandler(safe_handler(single_symbol_alerts_handler), pattern=r"^single_symbol_alerts$"))
 
     # group selection
-    app.add_handler(CallbackQueryHandler(safe_handler(forex_group_select), pattern=r"^(dxy_eu_gu|dxy_chf_jpy|dxy_aud_nzd)$"))
+    app.add_handler(CallbackQueryHandler(safe_handler(forex_group_select), pattern=r"^(dxy_eu_gu_chf|dxy_chf_jpy|dxy_aud_nzd)$"))
     app.add_handler(CallbackQueryHandler(safe_handler(futures_group_select), pattern=r"^(spx_nq_ym|es_nq_dow|spx_dow_nq)$"))
     app.add_handler(CallbackQueryHandler(safe_handler(crypto_group_select), pattern=r"^(btc_eth_xrp|btc_eth_total|btc_xrp_doge)$"))
     app.add_handler(CallbackQueryHandler(safe_handler(metals_group_select), pattern=r"^(dxy_xau_xag_aud|xau_xag_aud|dxy_xau_aud)$"))
     app.add_handler(CallbackQueryHandler(safe_handler(energy_group_select), pattern=r"^(dxy_usdcad_owest_obrent)$")) # Added energy group select handler
 
     # timeframe selection handlers
-    app.add_handler(CallbackQueryHandler(safe_handler(forex_timeframe_select), pattern=r"^timeframe::(dxy_eu_gu|dxy_chf_jpy|dxy_aud_nzd)::"))
+    app.add_handler(CallbackQueryHandler(safe_handler(forex_timeframe_select), pattern=r"^timeframe::(dxy_eu_gu_chf|dxy_chf_jpy|dxy_aud_nzd)::"))
     app.add_handler(CallbackQueryHandler(safe_handler(futures_timeframe_select), pattern=r"^timeframe::(spx_nq_ym|es_nq_dow|spx_dow_nq)::"))
     app.add_handler(CallbackQueryHandler(safe_handler(crypto_timeframe_select), pattern=r"^timeframe::(btc_eth_xrp|btc_eth_total|btc_xrp_doge)::"))
     app.add_handler(CallbackQueryHandler(safe_handler(metals_timeframe_select), pattern=r"^timeframe::(dxy_xau_xag_aud|xau_xag_aud|dxy_xau_aud)::"))

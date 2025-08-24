@@ -13,12 +13,11 @@ logger = logging.getLogger(__name__)
 
 GROUP_ID_SET = {
     "dxy_eu_gu_chf",
-    "dxy_chf_jpy",
     "dxy_aud_nzd",
 }
 
 FALLBACK_SYMBOLS = {
-    "dxy_eu_gu_chf": ["USDX", "EURUSD", "GBPUSD", "CHFUSD"],
+    "dxy_eu_gu_chf": ["USDX", "EURUSD", "GBPUSD", "USDCHF"],
     "dxy_aud_nzd": ["USDX", "AUD", "NZD"],
 }
 

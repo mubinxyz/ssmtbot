@@ -94,11 +94,11 @@ GROUP_CHARACTERISTICS = {
         "type": "reverse_moving"
     },
     # Energy bundle — oil first (reverse-moving vs USDCAD and DXY)
-    "dxy_usdcad_owest_obrent": {
-        "label": "WTI (West Texas) / BRENT / USDCAD / DXY",
-        "symbols": ["WTI", "BRENT", "USDCAD", "USDX"],
-        "type": "reverse_moving"
-    },
+    # "dxy_usdcad_owest_obrent": {
+    #     "label": "WTI (West Texas) / BRENT / USDCAD / DXY",
+    #     "symbols": ["USCRUDE", "UKBRENT", "USDCAD", "USDX"],
+    #     "type": "reverse_moving"
+    # },
 }
 
 def find_group(category: str, group_id: str):
