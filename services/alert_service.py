@@ -68,10 +68,37 @@ CACHE_TTL_SECONDS = 60
 # Groups
 # -------------------------
 GROUP_CHARACTERISTICS = {
-    "dxy_eu_gu": {"label": "DXY / EURUSD / GBPUSD", "symbols": ["USDX", "EURUSD", "GBPUSD"], "type": "reverse_moving"},
-    "btc_eth_xrp": {"label": "BTCUSD / ETHUSD / XRPUSD", "symbols": ["BTCUSD", "ETHUSD", "XRPUSD"], "type": "move_together"},
-    "spx_nq_ym": {"label": "S&P500 (SPX) / NASDAQ (NQ) / DOW (YM)", "symbols": ["SPX", "NQ", "YM"], "type": "move_together"},
-    "dxy_xau_xag_aud": {"label": "DXY / XAU / XAG / AUD", "symbols": ["USDX", "XAUUSD", "XAGUSD", "AUDUSD"], "type": "reverse_moving"}
+    "dxy_eu_gu": {
+        "label": "DXY / EURUSD / GBPUSD",
+        "symbols": ["USDX", "EURUSD", "GBPUSD"],
+        "type": "reverse_moving"
+    },
+    "dxy_aud_nzd": {
+        "label": "DXY / AUDUSD / NZDUSD",
+        "symbols": ["USDX", "AUDUSD", "NZDUSD"],
+        "type": "reverse_moving"
+    },
+    "btc_eth_xrp": {
+        "label": "BTCUSD / ETHUSD / XRPUSD",
+        "symbols": ["BTCUSD", "ETHUSD", "XRPUSD"],
+        "type": "move_together"
+    },
+    "spx_nq_ym": {
+        "label": "S&P500 (SPX) / NASDAQ (NQ) / DOW (YM)",
+        "symbols": ["SPX", "NQ", "YM"],
+        "type": "move_together"
+    },
+    "dxy_xau_xag_aud": {
+        "label": "DXY / XAU / XAG / AUD",
+        "symbols": ["USDX", "XAUUSD", "XAGUSD", "AUDUSD"],
+        "type": "reverse_moving"
+    },
+    # Energy bundle — oil first (reverse-moving vs USDCAD and DXY)
+    "dxy_usdcad_owest_obrent": {
+        "label": "WTI (West Texas) / BRENT / USDCAD / DXY",
+        "symbols": ["WTI", "BRENT", "USDCAD", "USDX"],
+        "type": "reverse_moving"
+    },
 }
 
 def find_group(category: str, group_id: str):

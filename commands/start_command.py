@@ -17,6 +17,7 @@ def get_main_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("💰 CRYPTO CURRENCY (USD)", callback_data="menu_crypto_usd")],
         [InlineKeyboardButton("💵 CRYPTO CURRENCY (USDT) (coming soon)", callback_data="menu_crypto_usdt")],
         [InlineKeyboardButton("🪙 METALS", callback_data="menu_metals")],
+        [InlineKeyboardButton("⚡ Energy", callback_data="menu_energy")],
         # Alerts row appended at the end:
         [InlineKeyboardButton("🔔 Alerts", callback_data="menu_alerts")],
     ]

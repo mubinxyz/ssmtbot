@@ -1,4 +1,4 @@
-# handlers/forex_handler.py
+# handlers/energy_handler.py
 import logging
 from contextlib import suppress
 from typing import List
@@ -11,15 +11,14 @@ import services.chart_service as chart_service
 
 logger = logging.getLogger(__name__)
 
+# Group id for an energy-related bundle: Oil (WTI, Brent), USDCAD, DXY
 GROUP_ID_SET = {
-    "dxy_eu_gu_chf",
-    "dxy_chf_jpy",
-    "dxy_aud_nzd",
+    "dxy_usdcad_owest_obrent",
 }
 
 FALLBACK_SYMBOLS = {
-    "dxy_eu_gu_chf": ["USDX", "EURUSD", "GBPUSD", "CHFUSD"],
-    "dxy_aud_nzd": ["USDX", "AUD", "NZD"],
+    # fallback symbol names used when alert_service doesn't provide canonical mapping
+    "dxy_usdcad_owest_obrent": ["USCRUDE", "UKBRENT", "USDCAD", "USDX"],
 }
 
 # timeframe choices (minutes). 1440 == 1 day
@@ -27,10 +26,6 @@ TIMEFRAMES = [5, 15, 60, 240]
 
 
 def _is_alert_active(user_id: int, gid: str, tf: int) -> bool:
-    """
-    Return True if an active alert exists for this (user, group_id, timeframe).
-    Uses alert_service.get_active_alerts() which returns only active alerts.
-    """
     try:
         active_alerts = alert_service.get_active_alerts() or {}
         for a in active_alerts.values():
@@ -38,7 +33,6 @@ def _is_alert_active(user_id: int, gid: str, tf: int) -> bool:
                 if int(a.get("user_id")) == int(user_id) and a.get("group_id") == gid and int(a.get("timeframe_min", -1)) == int(tf):
                     return True
             except Exception:
-                # if any cast fails, skip this alert entry
                 continue
     except Exception:
         logger.debug("_is_alert_active: error while checking alerts", exc_info=True)
@@ -47,24 +41,16 @@ def _is_alert_active(user_id: int, gid: str, tf: int) -> bool:
 
 def _menu_kb() -> InlineKeyboardMarkup:
     buttons = [
-        [InlineKeyboardButton("DXY / EURUSD / GBPUSD / CHFUSD", callback_data="dxy_eu_gu_chf")],
-        # [InlineKeyboardButton("DXY / CHF / JPY", callback_data="dxy_chf_jpy")],
-        [InlineKeyboardButton("DXY / AUD / NZD", callback_data="dxy_aud_nzd")],
+        [InlineKeyboardButton("WTI (West Texas) / BRENT / USDCAD / DXY", callback_data="dxy_usdcad_owest_obrent")],
         [InlineKeyboardButton("🔙 Back", callback_data="back_to_main")],
     ]
     return InlineKeyboardMarkup(buttons)
 
 
 def _timeframe_kb(gid: str, user_id: int) -> InlineKeyboardMarkup:
-    """
-    Build timeframe keyboard and append a small alert symbol inline:
-      - 🔔 = active alert for this (user, group, timeframe)
-      - 🔕 = inactive
-    """
     rows = []
     row = []
     for tf in TIMEFRAMES:
-        # Show a filled bell when active, muted bell when inactive
         icon = "🔔" if _is_alert_active(user_id, gid, tf) else "🔕"
         label = f"{tf}m {icon}" if tf < 1440 else f"1d {icon}"
         row.append(InlineKeyboardButton(label, callback_data=f"timeframe::{gid}::{tf}"))
@@ -73,7 +59,7 @@ def _timeframe_kb(gid: str, user_id: int) -> InlineKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="menu_forex")])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="menu_energy")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -82,7 +68,7 @@ def _action_kb(label: str, gid: str, tf_default: int = 15) -> InlineKeyboardMark
         [InlineKeyboardButton(f"View charts ({tf_default}m) - {label}", callback_data=f"charts::{gid}::{tf_default}")],
         [InlineKeyboardButton(f"Activate alert ({tf_default}m)", callback_data=f"activate::{gid}::{tf_default}")],
         [InlineKeyboardButton(f"Deactivate alert ({tf_default}m)", callback_data=f"deactivate::{gid}::{tf_default}")],
-        [InlineKeyboardButton("⬅️ Back", callback_data="menu_forex")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="menu_energy")],
     ])
 
 
@@ -100,10 +86,10 @@ def _resolve_label_and_symbols(gid: str):
 
 # Handlers
 
-async def forex_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def energy_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    await q.edit_message_text("Forex groups:", reply_markup=_menu_kb())
+    await q.edit_message_text("Energy groups:", reply_markup=_menu_kb())
 
 
 async def group_select_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -196,7 +182,6 @@ async def activate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     try:
         alert_service.set_ssmt_alert(user_id=user_id, group_id=gid, timeframe_min=tf)
-        # include a back button that returns to timeframe selection for this gid
         back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=gid)]])
         await q.edit_message_text(f"✅ Alert activated for {gid} ({tf}min).", reply_markup=back_kb)
     except Exception as e:

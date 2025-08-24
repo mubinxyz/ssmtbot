@@ -1,3 +1,4 @@
+# bot.py
 import asyncio
 import logging
 import concurrent.futures
@@ -54,6 +55,18 @@ from handlers.metals_handler import (
     deactivate_handler as metals_deactivate,
     GROUP_ID_SET as METALS_GROUPS,
 )
+
+# energy - CORRECTED IMPORTS
+from handlers.energy_handler import (
+    energy_menu_handler,
+    group_select_handler as energy_group_select,
+    timeframe_select_handler as energy_timeframe_select,
+    charts_handler as energy_charts,  # ✅ Use actual function name
+    activate_handler as energy_activate, # ✅ Use actual function name
+    deactivate_handler as energy_deactivate, # ✅ Use actual function name
+    GROUP_ID_SET as ENERGY_GROUPS, # ✅ Import the group set
+)
+
 # alerts handlers
 from handlers.alerts_handler import (
     alerts_menu_handler,
@@ -139,7 +152,7 @@ async def check_all_alerts_periodically(context: ContextTypes.DEFAULT_TYPE):
 
 
 # -----------------------------
-# action_dispatcher (safe inside)
+# action_dispatcher (UPDATED to include ENERGY_GROUPS)
 # -----------------------------
 @safe_handler
 async def action_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -155,7 +168,7 @@ async def action_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = cq.data or ""
     parts = data.split("::")
-    if len(parts) < 2:
+    if len(parts) < 2: # Adjusted check as action::gid::tf is minimum
         try:
             await cq.edit_message_text("Invalid action.")
         except BadRequest:
@@ -167,6 +180,8 @@ async def action_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = parts[0]
     gid = parts[1]
     target = None
+
+    # Route to the correct handler based on group ID
     if gid in FOREX_GROUPS:
         if action == "charts":
             target = forex_charts
@@ -195,6 +210,14 @@ async def action_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
             target = metals_activate
         elif action == "deactivate":
             target = metals_deactivate
+    # ADDED: Handler for ENERGY_GROUPS
+    elif gid in ENERGY_GROUPS: # <--- This was missing
+        if action == "charts":
+            target = energy_charts
+        elif action == "activate":
+            target = energy_activate
+        elif action == "deactivate":
+            target = energy_deactivate
 
     if target is None:
         try:
@@ -236,6 +259,8 @@ def main():
     app.add_handler(CallbackQueryHandler(safe_handler(crypto_usd_menu_handler), pattern=r"^menu_crypto_usd$"))
     app.add_handler(CallbackQueryHandler(safe_handler(metals_menu_handler), pattern=r"^menu_metals$"))
     app.add_handler(CallbackQueryHandler(safe_handler(alerts_menu_handler), pattern=r"^menu_alerts$"))
+    app.add_handler(CallbackQueryHandler(safe_handler(energy_menu_handler), pattern=r"^menu_energy$")) # Added energy menu handler
+
 
     # alerts handlers (show list, delete per-alert, single-symbol placeholder)
     app.add_handler(CallbackQueryHandler(safe_handler(show_alerts_handler), pattern=r"^show_alerts$"))
@@ -247,14 +272,16 @@ def main():
     app.add_handler(CallbackQueryHandler(safe_handler(futures_group_select), pattern=r"^(spx_nq_ym|es_nq_dow|spx_dow_nq)$"))
     app.add_handler(CallbackQueryHandler(safe_handler(crypto_group_select), pattern=r"^(btc_eth_xrp|btc_eth_total|btc_xrp_doge)$"))
     app.add_handler(CallbackQueryHandler(safe_handler(metals_group_select), pattern=r"^(dxy_xau_xag_aud|xau_xag_aud|dxy_xau_aud)$"))
+    app.add_handler(CallbackQueryHandler(safe_handler(energy_group_select), pattern=r"^(dxy_usdcad_owest_obrent)$")) # Added energy group select handler
 
     # timeframe selection handlers
     app.add_handler(CallbackQueryHandler(safe_handler(forex_timeframe_select), pattern=r"^timeframe::(dxy_eu_gu|dxy_chf_jpy|dxy_aud_nzd)::"))
     app.add_handler(CallbackQueryHandler(safe_handler(futures_timeframe_select), pattern=r"^timeframe::(spx_nq_ym|es_nq_dow|spx_dow_nq)::"))
     app.add_handler(CallbackQueryHandler(safe_handler(crypto_timeframe_select), pattern=r"^timeframe::(btc_eth_xrp|btc_eth_total|btc_xrp_doge)::"))
     app.add_handler(CallbackQueryHandler(safe_handler(metals_timeframe_select), pattern=r"^timeframe::(dxy_xau_xag_aud|xau_xag_aud|dxy_xau_aud)::"))
+    app.add_handler(CallbackQueryHandler(safe_handler(energy_timeframe_select), pattern=r"^timeframe::(dxy_usdcad_owest_obrent)::")) # Added energy timeframe select handler
 
-    # single action dispatcher (charts/activate/deactivate)
+    # single action dispatcher (charts/activate/deactivate) - UPDATED dispatcher handles energy now
     app.add_handler(CallbackQueryHandler(safe_handler(action_dispatcher), pattern=r"^(charts|activate|deactivate)::"))
 
     # Register cleanup at exit
