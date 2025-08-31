@@ -26,8 +26,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # Send “not registered” message
         await update.message.reply_text(
             "❌ Sorry, you are not registered to use this bot.\n"
-            "Please contact @mubinxyz for purchasing."
+            "Please contact @mubinxyz for purchasing access.\n\n"
+            "❌ متأسفیم، شما برای استفاده از این ربات ثبت‌نام نکرده‌اید.\n"
+            "لطفاً برای خرید و دریافت دسترسی با @mubinxyz تماس بگیرید."
         )
+
 
         # Optionally save the chat_id for later registration
         save_unregistered_user(chat_id, user.username, user.first_name, user.last_name)
