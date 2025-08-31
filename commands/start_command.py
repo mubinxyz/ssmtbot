@@ -2,15 +2,9 @@
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from models.user import get_or_create_user
-
+from models.user import get_or_create_user, is_user_registered, save_unregistered_user
 
 def get_main_menu() -> InlineKeyboardMarkup:
-    """
-    Returns the main menu inline keyboard with market categories and an Alerts entry.
-    
-    """
-    
     buttons = [
         [InlineKeyboardButton("📊 FOREX CURRENCIES", callback_data="menu_forex")],
         [InlineKeyboardButton("📈 FUTURES (STOCKS)", callback_data="menu_futures")],
@@ -18,24 +12,35 @@ def get_main_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("💵 CRYPTO CURRENCY (USDT) (coming soon)", callback_data="menu_crypto_usdt")],
         [InlineKeyboardButton("🪙 METALS", callback_data="menu_metals")],
         [InlineKeyboardButton("⚡ Energy", callback_data="menu_energy")],
-        # Alerts row appended at the end:
         [InlineKeyboardButton("🔔 Alerts", callback_data="menu_alerts")],
     ]
     return InlineKeyboardMarkup(buttons)
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Handles the /start command and sends the main menu with inline keyboard options.
-    """
-    user_data = get_or_create_user(
-        chat_id=update.message.chat.id,
-        username=update.message.from_user.username,
-        first_name=update.message.from_user.first_name,
-        last_name=update.message.from_user.last_name
-    )
-    
+    chat_id = update.message.chat.id
     user = update.effective_user
+
+    # Check if user is registered
+    if not is_user_registered(chat_id):
+        # Send “not registered” message
+        await update.message.reply_text(
+            "❌ Sorry, you are not registered to use this bot.\n"
+            "Please contact @mubinxyz for purchasing."
+        )
+
+        # Optionally save the chat_id for later registration
+        save_unregistered_user(chat_id, user.username, user.first_name, user.last_name)
+        return
+
+    # Registered users proceed as usual
+    user_data = get_or_create_user(
+        chat_id=chat_id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name
+    )
+
     welcome_text = (
         f"👋 Hello {user.first_name or 'Trader'}!\n\n"
         "Welcome to your market analysis bot.\n"
@@ -46,7 +51,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         text=welcome_text,
         reply_markup=get_main_menu()
     )
-
 
 async def back_to_main_handler(update, context) -> None:
     """
