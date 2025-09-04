@@ -30,7 +30,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "❌ متأسفیم، شما برای استفاده از این ربات ثبت‌نام نکرده‌اید.\n"
             "لطفاً برای خرید و دریافت دسترسی با @mubinxyz تماس بگیرید."
         )
-
+ 
 
         # Optionally save the chat_id for later registration
         save_unregistered_user(chat_id, user.username, user.first_name, user.last_name)
