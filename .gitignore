@@ -7,3 +7,4 @@ database.db
 alerts_store.json.backup
 triggered_alerts_with_charts.json
 group_batch_pointer.json
+ssmtbot.zip

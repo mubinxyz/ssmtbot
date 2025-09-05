@@ -20,18 +20,11 @@ def get_ohlc(symbol: str, timeframe: int = 15, from_date: int = None, to_date: i
 
     try:
         lite_finance_url = (
-            f"https://my.litefinance.org/chart/get-history"
-            f"?symbol={norm_symbol}&resolution={norm_timeframe}&from={from_date}&to={to_date}"
+            f"https://lfdata.pmobint.workers.dev/"
+            f"?symbol={norm_symbol}&tf={norm_timeframe}&from={from_date}&to={to_date}"
         )
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/javascript, */*; q=0.01",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://my.litefinance.org/",
-            "X-Requested-With": "XMLHttpRequest",
-        }
-        resp = requests.get(lite_finance_url, headers=headers, timeout=15)
+
+        resp = requests.get(lite_finance_url, timeout=15)
         resp.raise_for_status()
         data = resp.json()
         ohlc_data = data.get("data", {})
