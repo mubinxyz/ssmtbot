@@ -41,33 +41,28 @@ def get_ohlc(symbol: str, timeframe: int = 15, from_date: int = None, to_date: i
 
 def get_price(symbol: str) -> dict | None:
     """
-    Get the latest price of a symbol.
-    1. Try scraping LiteFinance.
-    2. If scraping fails, use TwelveData API.
+    Get the latest price of a symbol via Cloudflare Worker.
     """
     norm_symbol = normalize_symbol(symbol)
-
-    # --- 1. Try LiteFinance scrape ---
     try:
-        result_raw = get_last_data(symbol)  # this is a string
-        # parse it into a dict
-        if isinstance(result_raw, str):
-            result = json.loads(result_raw)
-        else:
-            result = result_raw
+        # use Worker endpoint
+        worker_url = f"https://lfdata.pmobint.workers.dev/?symbol={norm_symbol}&tf=1&from=0&to={int(time.time())}"
+        resp = requests.get(worker_url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json().get("data", {})
+        if not data:
+            return None
 
-        price = result.get("price")
-        bid = result.get("bid")
-        ask = result.get("ask")
+        # Use last candle close as latest price
+        price = data["c"][-1] if "c" in data and data["c"] else None
         if price is not None:
             return {
-                "source": "litefinance scraped last data",
+                "source": "litefinance worker",
                 "symbol": norm_symbol,
                 "price": float(price),
-                "bid": bid,
-                "ask": ask
+                "bid": float(price),
+                "ask": float(price)
             }
-        else:
-            print(f"[LiteFinance] Script returned no price.")
     except Exception as e:
-        print(f"[LiteFinance] Error: {e}")
+        print(f"[LiteFinance Worker] Error fetching price: {e}")
+    return None
